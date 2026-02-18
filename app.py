@@ -125,4 +125,84 @@ with tab_tax:
         val_prod_default = 500_000 if settore == "Generazione Elettrica" else 300_000
         produzione = st.number_input(f"Produzione Annua ({unita_prod})", value=val_prod_default, step=50000)
         
-        intensita
+        intensita_tco2 = emissions / produzione if produzione > 0 else 0
+        if settore == "Generazione Elettrica":
+            intensita_display = intensita_tco2 * 1000
+            soglia = 100
+            unita_int = "gCO2/kWh"
+        elif settore == "Produzione Cemento":
+            intensita_display, soglia, unita_int = intensita_tco2, 0.469, "tCO2/ton"
+        else:
+            intensita_display, soglia, unita_int = intensita_tco2, 1.3, "tCO2/ton"
+            
+        is_aligned = intensita_display <= soglia
+
+    with col_grafico:
+        if is_aligned: st.success("✅ **ALLINEATO:** L'asset rispetta i limiti e può accedere a Green Bonds.")
+        else: st.error("❌ **NON ALLINEATO:** L'asset inquina troppo per gli standard europei.")
+        
+        fig_tax = px.bar(x=[intensita_display], y=[settore], orientation='h', labels={'x': f'Intensità ({unita_int})', 'y': ''})
+        fig_tax.update_traces(marker_color="green" if is_aligned else "red")
+        fig_tax.add_vline(x=soglia, line_dash="dash", line_color="black", annotation_text=f"Soglia Legale ({soglia})", annotation_position="top")
+        fig_tax.update_layout(template="plotly_white", height=250)
+        st.plotly_chart(fig_tax, use_container_width=True)
+
+# ==========================================
+# SCHERMATA 4: PIANO DI TRANSIZIONE
+# ==========================================
+with tab_transizione:
+    st.header("Simulatore Piano di Transizione (CapEx vs OpEx)")
+    st.markdown("Cosa succede se investi oggi per ridurre le emissioni? Confrontiamo lo scenario 'Non fare nulla' con il 'Piano di Transizione'.")
+    
+    col_t1, col_t2, col_t3 = st.columns(3)
+    capex = col_t1.number_input("Investimento (CapEx) in €", value=10_000_000, step=1_000_000)
+    riduzione = col_t2.slider("Riduzione Emissioni Stimata (%)", 10, 100, 50)
+    anno_inv = col_t3.slider("Anno di esecuzione lavori", 2025, 2040, 2026)
+    
+    # Calcolo del nuovo scenario "Post-Investimento" (Analizziamo lo Shock Scenario per vedere la differenza)
+    sim_data = []
+    shock_df = country_data[country_data['Scenario'] == 'Transizione Ritardata (Shock)']
+    
+    for _, row in shock_df.iterrows():
+        y = row['Anno']
+        eff_price = row['Prezzo Carbonio Base'] * policy_multiplier
+        
+        # Scenario 1: Non fare nulla
+        profit_base = revenue - opex - (eff_price * emissions)
+        
+        # Scenario 2: Investimento
+        emissions_post = emissions * (1 - (riduzione/100)) if y > anno_inv else emissions
+        profit_post = revenue - opex - (eff_price * emissions_post)
+        if y == anno_inv: profit_post -= capex # Sottrae il costo dell'investimento in quell'anno
+        
+        sim_data.append({"Anno": y, "Utile": profit_base, "Strategia": "Nessun Intervento (Default Certo)"})
+        sim_data.append({"Anno": y, "Utile": profit_post, "Strategia": "Piano di Transizione (Retrofit)"})
+        
+    fig_trans = px.line(pd.DataFrame(sim_data), x="Anno", y="Utile", color="Strategia", template="plotly_white")
+    fig_trans.update_traces(line_shape='spline', line=dict(width=3))
+    fig_trans.add_hline(y=0, line_dash="dot", line_color="red", annotation_text="Fallimento")
+    fig_trans.update_layout(hovermode=False, legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, title=None))
+    st.plotly_chart(fig_trans, use_container_width=True)
+
+# ==========================================
+# SCHERMATA 5: RISCHIO FISICO
+# ==========================================
+with tab_fisico:
+    st.header("Valutazione Rischio Fisico (Danni Climatici)")
+    st.markdown("Oltre alle tasse (Rischio di Transizione), valuta i danni operativi dovuti a eventi estremi (Es. alluvioni, ondate di calore) secondo lo scenario ad alte emissioni (RCP 8.5).")
+    
+    livello_rischio = st.radio("Livello di Esposizione Geografica dell'Asset:", ["Basso", "Medio", "Alto"], horizontal=True)
+    
+    # Imposta un moltiplicatore di danni operativi (es. +1% di costi l'anno se Basso, +5% se Alto)
+    molt_danno = {"Basso": 0.01, "Medio": 0.03, "Alto": 0.06}[livello_rischio]
+    
+    fisico_data = []
+    for y in range(2020, 2055, 5):
+        # Aumentiamo l'OpEx (costi operativi, assicurazioni, riparazioni) in base all'anno e al rischio
+        opex_danneggiato = opex * (1 + ((y - 2020) * molt_danno))
+        profitto_fisico = revenue - opex_danneggiato
+        fisico_data.append({"Anno": y, "Utile Netto (Post-Danni)": profitto_fisico, "Rischio": livello_rischio})
+        
+    fig_fisico = px.bar(pd.DataFrame(fisico_data), x="Anno", y="Utile Netto (Post-Danni)", color="Rischio", template="plotly_white", color_discrete_sequence=['#ff9999' if livello_rischio=="Medio" else '#ff4d4d' if livello_rischio=="Alto" else '#99ccff'])
+    fig_fisico.update_layout(hovermode=False)
+    st.plotly_chart(fig_fisico, use_container_width=True)
