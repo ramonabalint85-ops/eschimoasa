@@ -15,16 +15,17 @@ from geopy.geocoders import Nominatim
 st.set_page_config(page_title="CarbonRisk AI Enterprise", layout="wide")
 
 # --- SINCRONIZZAZIONE (Session State) ---
-if 'revenue' not in st.session_state: st.session_state.revenue = 50_000_000
-if 'opex' not in st.session_state: st.session_state.opex = 30_000_000
-if 'scope1' not in st.session_state: st.session_state.scope1 = 50000
-if 'scope2' not in st.session_state: st.session_state.scope2 = 40000
-if 'scope3' not in st.session_state: st.session_state.scope3 = 60000
+# Inizializzati tutti a ZERO come richiesto
+if 'revenue' not in st.session_state: st.session_state.revenue = 0
+if 'opex' not in st.session_state: st.session_state.opex = 0
+if 'scope1' not in st.session_state: st.session_state.scope1 = 0
+if 'scope2' not in st.session_state: st.session_state.scope2 = 0
+if 'scope3' not in st.session_state: st.session_state.scope3 = 0
 if 'perc_red' not in st.session_state: st.session_state.perc_red = 50
-if 'em_final' not in st.session_state: st.session_state.em_final = 75000
+if 'em_final' not in st.session_state: st.session_state.em_final = 0
 if 'sbti_approved' not in st.session_state: st.session_state.sbti_approved = False
-if 'rata_prestito' not in st.session_state: st.session_state.rata_prestito = 8_000_000
-if 'ammortamenti' not in st.session_state: st.session_state.ammortamenti = 4_000_000
+if 'rata_prestito' not in st.session_state: st.session_state.rata_prestito = 0
+if 'ammortamenti' not in st.session_state: st.session_state.ammortamenti = 0
 if 'policy_multiplier' not in st.session_state: st.session_state.policy_multiplier = 1.0
 
 def get_tot_emissions(): return st.session_state.scope1 + st.session_state.scope2 + st.session_state.scope3
@@ -204,7 +205,7 @@ with t_rischi:
         
         st.subheader("2. Simulatore CapEx di Transizione")
         st.markdown("Investimenti pianificati per l'efficientamento e l'abbattimento delle emissioni lorde.")
-        capex = st.number_input("Investimento Transizione (CapEx in €)", value=10_000_000, step=1_000_000)
+        capex = st.number_input("Investimento Transizione (CapEx in €)", value=0, step=1_000_000)
         st.slider("Efficacia attesa (Riduzione Stimata %)", 0, 100, key='perc_red', on_change=sync_from_perc)
         st.success(f"**Risultato Atteso:** Le emissioni nette finali (Hard-to-abate) scenderanno a **{st.session_state.em_final:,} tCO2**.")
 
@@ -269,14 +270,14 @@ with t_rischi:
         st.divider()
 
         st.subheader("3. Carbon Offsetting (Crediti VERs)")
-        prezzo_ver = st.number_input("Prezzo Mercato Volontario (€/tCO2)", value=15)
+        prezzo_ver = st.number_input("Prezzo Mercato Volontario (€/tCO2)", value=0)
         costo_offsetting = st.session_state.em_final * prezzo_ver
         st.metric("Costo Annuale per raggiungere 'Net Zero'", f"€ {costo_offsetting:,.0f}")
 
-# --- TAB 3: TASSONOMIA UE (AGGIORNATO) ---
+# --- TAB 3: TASSONOMIA UE ---
 with t_tax:
     st.header("🇪🇺 Allineamento Tassonomia UE (EU Taxonomy Compass)")
-    st.markdown("Valuta l'allineamento delle tue attività economiche ai Criteri di Vaglio Tecnico (TSC) della Tassonomia Europea. Scegli prima il macro-settore e poi l'attività specifica.")
+    st.markdown("Valuta l'allineamento delle tue attività economiche ai Criteri di Vaglio Tecnico (TSC) della Tassonomia Europea. L'analisi è basata sulle emissioni residue **dopo** il piano di transizione.")
 
     # Struttura Dati a Cascata (Settori -> Attività Specifiche)
     tassonomia_db = {
@@ -327,12 +328,10 @@ with t_tax:
 
     with col_tax1:
         st.subheader("1. Classificazione dell'Attività")
-        # Il primo selettore estrae le chiavi del dizionario
         settore = st.selectbox("Macro-Settore Economico (NACE)", list(tassonomia_db.keys()))
-        # Il secondo selettore mostra solo gli elementi associati al settore scelto
         attivita = st.selectbox("Attività Economica Specifica", tassonomia_db[settore])
 
-    # Assegnazione dinamica di metriche, unità e soglie in base all'attività scelta
+    # Assegnazione dinamica di metriche, unità e soglie
     attivita_lower = attivita.lower()
     settore_lower = settore.lower()
     
@@ -356,24 +355,24 @@ with t_tax:
     with col_tax2:
         st.subheader("2. Parametri (Mitigazione Climatica)")
         st.markdown(f"**Soglia di Allineamento UE:** `<= {soglia} {target_unit}`")
-        prod = st.number_input(f"Volume Annuo di Produzione/Gestione ({unita})", value=100000, step=10000)
+        prod = st.number_input(f"Volume Annuo di Produzione/Gestione ({unita})", value=0, step=10000)
 
-        # Calcolo intensità
-        int_calc = (get_tot_emissions() / prod) if prod > 0 else 0
+        # CALCOLO INTENSITÀ BASATO SULLE EMISSIONI POST-TRANSIZIONE (em_final)
+        int_calc = (st.session_state.em_final / prod) if prod > 0 else 0
 
         # Aggiustamenti specifici per unità di misura
         if target_unit.startswith("g"):
-            int_calc *= 1000 # Convertiamo da tonnellate a grammi per MWh/kWh
+            int_calc *= 1000 # Convertiamo da tonnellate a grammi
         elif "PUE" in target_unit:
-            int_calc = 1.0 + (get_tot_emissions() / 1000000) # Simulazione punteggio PUE Data Center
+            int_calc = 1.0 + (st.session_state.em_final / 1000000) 
 
         is_aligned = int_calc <= soglia
 
         st.metric(
-            "Intensità Attuale Calcolata", 
+            "Intensità Attuale (Post-CapEx)", 
             f"{int_calc:.2f} {target_unit.split(' ')[0]}", 
-            delta="ALLINEATO ALLA TASSONOMIA UE" if is_aligned else "NON ALLINEATO", 
-            delta_color="normal" if is_aligned else "inverse"
+            delta="ALLINEATO ALLA TASSONOMIA UE" if is_aligned and prod > 0 else "INSERISCI VOLUMI" if prod == 0 else "NON ALLINEATO", 
+            delta_color="normal" if is_aligned and prod > 0 else "off" if prod == 0 else "inverse"
         )
         
     st.divider()
