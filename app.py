@@ -68,10 +68,6 @@ def get_nace_section(d_code):
 
 @st.cache_data
 def load_taxonomy_json(file_content_or_path="taxonomy.json"):
-    """
-    Legge il file JSON dell'EU Taxonomy Compass ed estrae dinamicamente 
-    tutti i prefissi NACE ammissibili dalla normativa.
-    """
     eligible_prefixes = set()
     try:
         if hasattr(file_content_or_path, 'getvalue'):
@@ -89,16 +85,13 @@ def load_taxonomy_json(file_content_or_path="taxonomy.json"):
                 for code in nace_list:
                     if not code: continue
                     clean_code = code.strip()
-                    # Rimuove le lettere (es. C25 -> 25, H49.3.9 -> 49.3.9) e i punti (-> 4939)
                     num_part = re.sub(r'^[A-Z]+', '', clean_code, flags=re.IGNORECASE).replace('.', '')
-                    # Aggiunge uno zero iniziale se necessario (es. 2 -> 02, come nel settore Agricoltura)
                     if len(num_part) == 1:
                         num_part = "0" + num_part
                     if num_part:
                         eligible_prefixes.add(num_part)
         return eligible_prefixes
     except Exception as e:
-        print(f"Errore JSON: {e}")
         return set()
 
 @st.cache_data
@@ -406,50 +399,36 @@ with t_rischi:
         costo_offsetting = st.session_state.em_final * prezzo_ver
         st.metric("Costo Annuale per raggiungere neutralità climatica assoluta", f"€ {costo_offsetting:,.0f}")
 
-# --- TAB 3: TASSONOMIA UE (RDF + JSON COMPASS) ---
+# --- TAB 3: TASSONOMIA UE (RDF + JSON COMPASS + WORKFLOW ERP) ---
 with t_tax:
-    st.header("🇪🇺 Reporting Tassonomia UE (Auto-Filtro con EU Compass)")
-    st.markdown("Il sistema carica l'intero albero **NACE** europeo e lo incrocia in tempo reale con i codici del database **EU Taxonomy Compass (JSON)**. Le attività non previste dalla Tassonomia (es. barbieri o estrazioni petrolifere) verranno automaticamente bloccate.")
+    st.header("🇪🇺 Reporting Tassonomia UE (Workflow Enterprise)")
+    st.markdown("Come nei modelli aziendali complessi (es. Gruppo VINCI), associa ogni progetto a un Cost Center ERP. Se l'attività è ammissibile secondo l'EU Compass, il Project Manager deve caricare le prove documentali necessarie ai fini di audit (DNSH, MS e SC).")
     
-    # 1. Caricamento file NACE (RDF)
+    # 1. Caricamento Dati
     nace_db = load_nace_hierarchy("NACE_Rev.2.1.rdf")
-    # 2. Caricamento EU Taxonomy Compass (JSON)
     taxonomy_prefixes = load_taxonomy_json("taxonomy.json")
     
     mostra_successo = True
-    
-    if nace_db is None:
-        mostra_successo = False
-        st.error("❌ Errore: File NACE_Rev.2.1.rdf non trovato in directory.")
-        file_nace_manuale = st.file_uploader("Carica NACE_Rev.2.1.rdf", type=['rdf', 'xml'])
-        if file_nace_manuale:
-            nace_db = load_nace_hierarchy(file_nace_manuale)
-        else:
-            nace_db = {"In attesa del file NACE...": {"-": {"-": {"-": ""}}}}
-    elif "ERRORE" in str(list(nace_db.keys())[0]):
-        mostra_successo = False
-        st.error(f"❌ Errore di lettura NACE: {list(nace_db.keys())[0]}")
+    if nace_db is None or "ERRORE" in str(nace_db): mostra_successo = False
+    if taxonomy_prefixes is None or not taxonomy_prefixes: mostra_successo = False
 
-    if taxonomy_prefixes is None:
-        mostra_successo = False
-        st.error("❌ Errore: File taxonomy.json (EU Compass) non trovato.")
-        file_tax_manuale = st.file_uploader("Carica taxonomy.json", type=['json'])
-        if file_tax_manuale:
-            taxonomy_prefixes = load_taxonomy_json(file_tax_manuale)
-        else:
-            taxonomy_prefixes = set()
-
-    if mostra_successo and taxonomy_prefixes:
+    if mostra_successo:
         st.success("✅ Database NACE e EU Taxonomy Compass caricati e sincronizzati (Filtro Automatico Attivo).")
+    else:
+        st.warning("⚠️ Strutture dati in caricamento. Assicurati che NACE_Rev.2.1.rdf e taxonomy.json siano presenti su GitHub.")
 
     c_tax_head1, c_tax_head2 = st.columns([1, 2])
     c_tax_head1.metric("CapEx Totale di Riferimento", f"€ {st.session_state.capex_totale:,.0f}")
     
-    with st.expander("➕ Aggiungi attività al report CapEx", expanded=True):
+    with st.expander("➕ Aggiungi Commessa ERP al Report CapEx", expanded=True):
+        # CAMPO STEP 3: TAGGING FINANZIARIO ERP
+        erp_id = st.text_input("🏢 ID Commessa / Cost Center ERP (es. SAP-PRJ-2026-001)", help="Il codice identificativo del progetto sul gestionale finanziario aziendale.")
+        st.divider()
+        
         col_tax1, col_tax2 = st.columns(2)
 
         with col_tax1:
-            settore = st.selectbox("Sezione (Livello 1)", list(nace_db.keys()))
+            settore = st.selectbox("Sezione (Livello 1)", list(nace_db.keys()) if isinstance(nace_db, dict) and "ERRORE" not in str(nace_db) else [])
             divisione = st.selectbox("Divisione (Livello 2)", list(nace_db[settore].keys()) if settore else [])
             gruppo = st.selectbox("Gruppo (Livello 3)", list(nace_db[settore][divisione].keys()) if divisione else [])
             classe = st.selectbox("Classe (Livello 4)", list(nace_db[settore][divisione][gruppo].keys()) if gruppo else [])
@@ -460,12 +439,10 @@ with t_tax:
             capex_attivita = st.number_input("Absolute CapEx (€)", min_value=0, value=0, step=100000)
             
             # --- INCROCIO DATI: BLOCCO AUTOMATICO ---
-            # Puliamo il codice utente dai punti per compararlo coi prefissi del JSON
             user_nace_clean = nace_code.replace('.', '') if nace_code else ""
             is_eligible = False
             
             if user_nace_clean and taxonomy_prefixes:
-                # Se la stringa NACE selezionata inizia con uno dei prefissi ammessi, l'attività passa
                 is_eligible = any(user_nace_clean.startswith(prefix) for prefix in taxonomy_prefixes)
             
             st.markdown("### Status Tassonomia:")
@@ -487,9 +464,11 @@ with t_tax:
 
         with col_tax2:
             if not is_eligible:
-                st.error("⚠️ L'attività NON è ammissibile ai sensi del Regolamento UE. I test tecnici non sono applicabili.")
+                st.error("⚠️ L'attività NON è ammissibile. Screening tecnico e documentale non richiesto.")
                 tsc_passed = False
+                file_sc_name, file_dnsh_name, file_ms_name = "N/A", "N/A", "N/A"
             else:
+                # CAMPO STEP 2: WORKFLOW DI SCREENING TECNICO E DOCUMENT VAULT
                 st.markdown(f"**Test Substantial Contribution (CCM):** `<= {soglia} {target_unit}`")
                 prod = st.number_input(f"Volume Annuo ({unita})", value=0, step=10000)
                 int_calc = (st.session_state.em_final / prod) if prod > 0 else 0
@@ -497,21 +476,38 @@ with t_tax:
                 elif "PUE" in target_unit: int_calc = 1.0 + (st.session_state.em_final / 1000000)
                 
                 tsc_passed = int_calc <= soglia and prod > 0
-                st.metric("Substantial Contribution", "Superato (Y)" if tsc_passed else "Non Superato (N)", delta_color="normal" if tsc_passed else "inverse")
+                st.metric("Esito Substantial Contribution", "Superato (Y)" if tsc_passed else "Non Superato (N)", delta_color="normal" if tsc_passed else "inverse")
+                
+                st.divider()
+                st.markdown("🔒 **Document Vault (Requisiti di Audit)**")
+                file_sc = st.file_uploader("1. Prova Substantial Contribution (es. LCA, EPC)", type=["pdf", "xlsx", "docx"])
+                file_dnsh = st.file_uploader("2. Prova DNSH (es. Analisi Rischi Fisici, VIA)", type=["pdf", "xlsx"])
+                file_ms = st.file_uploader("3. Prova Minimum Safeguards (es. Audit Supply Chain)", type=["pdf", "docx"])
+                
+                # Salviamo solo il nome del file per non appesantire il database
+                file_sc_name = file_sc.name if file_sc else "Mancante"
+                file_dnsh_name = file_dnsh.name if file_dnsh else "Mancante"
+                file_ms_name = file_ms.name if file_ms else "Mancante"
             
-        if st.button("➕ Inserisci in Tabella"):
-            if capex_attivita > 0:
+        if st.button("➕ Inserisci in Tabella / Registra a Sistema"):
+            if not erp_id:
+                st.error("⚠️ Inserisci un ID Commessa ERP prima di procedere.")
+            elif capex_attivita > 0:
                 st.session_state.tax_portfolio.append({
+                    "ERP Cost Center": erp_id,
                     "Economic activities": attivita,
                     "Code(s)": nace_code,
                     "Absolute CapEx (€)": capex_attivita,
                     "Eligible (Y/N)": "Y" if is_eligible else "N",
                     "TSC Passed": "Y" if (tsc_passed and is_eligible) else "N",
-                    "DNSH": "Y" if is_eligible else "N", 
-                    "Safeguards": "Y" if is_eligible else "N", 
+                    "DNSH": "Y" if (is_eligible and file_dnsh) else "N", 
+                    "Safeguards": "Y" if (is_eligible and file_ms) else "N",
+                    "Doc_SC": file_sc_name,
+                    "Doc_DNSH": file_dnsh_name,
+                    "Doc_MS": file_ms_name
                 })
-                st.success("Aggiunto!")
-                time.sleep(0.5)
+                st.success(f"Commessa {erp_id} registrata con successo e collegata alla Tassonomia!")
+                time.sleep(1)
                 st.rerun()
             else:
                 st.error("Il CapEx deve essere > 0.")
@@ -522,20 +518,24 @@ with t_tax:
     if st.session_state.tax_portfolio:
         df_tax = pd.DataFrame(st.session_state.tax_portfolio)
         
-        st.markdown("✏️ **Personalizza e Pulisci:** Modifica direttamente i valori nella tabella (es. cambia i DNSH in 'N' per vedere l'impatto). Per cancellare una riga, seleziona la spunta a sinistra e premi Canc/Backspace.")
+        st.markdown("✏️ **Controllo Revisori:** Verifica le prove caricate e l'allineamento. Le attività prive dei documenti richiesti (Doc = 'Mancante') risulteranno in DNSH/Safeguards pari a 'N'.")
         
         edited_df = st.data_editor(
             df_tax,
             use_container_width=True,
             num_rows="dynamic",
             column_config={
+                "ERP Cost Center": st.column_config.TextColumn("ID ERP", width="small"),
                 "Economic activities": st.column_config.TextColumn("Attività Economica", width="medium"),
                 "Code(s)": st.column_config.TextColumn("NACE", width="small"),
                 "Absolute CapEx (€)": st.column_config.NumberColumn("CapEx (€)", format="€ %d", width="small"),
                 "Eligible (Y/N)": st.column_config.TextColumn("Ammissibile", disabled=True, width="small"),
                 "TSC Passed": st.column_config.TextColumn("TSC (Y/N)", disabled=True, width="small"),
                 "DNSH": st.column_config.SelectboxColumn("DNSH", options=["Y", "N", "N/A"], required=True, width="small"),
-                "Safeguards": st.column_config.SelectboxColumn("Min. Safeguards", options=["Y", "N", "N/A"], required=True, width="small")
+                "Safeguards": st.column_config.SelectboxColumn("Safeguards", options=["Y", "N", "N/A"], required=True, width="small"),
+                "Doc_SC": st.column_config.TextColumn("Prova SC", disabled=True),
+                "Doc_DNSH": st.column_config.TextColumn("Prova DNSH", disabled=True),
+                "Doc_MS": st.column_config.TextColumn("Prova MS", disabled=True)
             },
             key="tax_editor"
         )
@@ -694,12 +694,12 @@ with t_cbam:
 
 # --- TAB 5: DOWNLOAD ---
 with t_down:
-    st.header("📥 Esportazione Documentazione Ufficiale")
+    st.header("📥 Esportazione Dati e Modelli Ufficiali")
     
     col_d1, col_d2, col_d3 = st.columns(3)
     
     with col_d1:
-        st.subheader("1. Report Strategico Board")
+        st.subheader("1. Report Board (ESG & Rischi)")
         if st.button("🪄 Genera PDF"):
             pdf = FPDF()
             pdf.add_page()
@@ -711,7 +711,7 @@ with t_down:
 
     with col_d2:
         st.subheader("2. Tassonomia UE (Annex II)")
-        st.markdown("Modello scaricabile basato su Tab 3.")
+        st.markdown("Genera la tabella ufficiale per il Bilancio di Sostenibilità.")
         if st.session_state.tax_portfolio:
             df_tax_export = pd.DataFrame(st.session_state.tax_portfolio)
             capex_dichiarato = df_tax_export["Absolute CapEx (€)"].sum()
@@ -743,11 +743,9 @@ with t_down:
 
     with col_d3:
         st.subheader("3. Modello CBAM Self-Assessment")
-        st.markdown("Generato dinamicamente con struttura basata sul *CBAM Self Assessment Tool Version 1.1*.")
-        
+        st.markdown("Genera l'export per le dichiarazioni doganali UE.")
         if st.session_state.cbam_portfolio:
             df_cbam_export = pd.DataFrame(st.session_state.cbam_portfolio)
-            
             export_cbam_cols = {
                 "CN Code": "CN Code of good",
                 "Descrizione": "Goods Description",
@@ -757,17 +755,48 @@ with t_down:
                 "Test: Annex I?": "Are goods subject to CBAM?",
                 "CBAM APPLICABILE": "CBAM Reporting Requirement"
             }
-            
             df_final_cbam = df_cbam_export.rename(columns=export_cbam_cols)[list(export_cbam_cols.values())]
             df_final_cbam.replace({"Sì": "Yes", "No": "No", "SÌ": "CBAM Applies", "NO": "No Action Required"}, inplace=True)
-            
             csv_cbam_data = df_final_cbam.to_csv(index=False, sep=",") 
-            
-            st.download_button(
-                label="📥 Scarica Modello CBAM (.CSV)", 
-                data=csv_cbam_data, 
-                file_name="CBAM_Self_Assessment_Export.csv", 
-                mime="text/csv"
-            )
+            st.download_button(label="📥 Scarica Modello CBAM (.CSV)", data=csv_cbam_data, file_name="CBAM_Self_Assessment_Export.csv", mime="text/csv")
         else:
-            st.warning("⚠️ Compila il registro nel Tab 4 per abilitare il download.")
+            st.warning("⚠️ Compila il registro CBAM per abilitare l'export.")
+
+    st.divider()
+    
+    # --- NUOVA SEZIONE: EXPORT ERP (SAP/ORACLE) ---
+    st.subheader("🏭 4. Esportazione Tagging ERP (Integrazione Finance)")
+    st.markdown("Genera un file formattato a uso e consumo dei sistemi di contabilità aziendale (es. SAP, Microsoft Dynamics) per l'ingestion automatica dei Tag Tassonomici sui Centri di Costo.")
+    
+    if st.session_state.tax_portfolio:
+        df_erp_export = pd.DataFrame(st.session_state.tax_portfolio)
+        
+        # Calcoliamo se la commessa è Allineata
+        df_erp_export["Taxonomy-aligned"] = (df_erp_export["Eligible (Y/N)"] == "Y") & (df_erp_export["TSC Passed"] == "Y") & (df_erp_export["DNSH"] == "Y") & (df_erp_export["Safeguards"] == "Y")
+        
+        # Strutturiamo un CSV pulito per macchine (ERP)
+        df_erp_clean = df_erp_export[[
+            "ERP Cost Center", 
+            "Code(s)", 
+            "Absolute CapEx (€)", 
+            "Eligible (Y/N)", 
+            "Taxonomy-aligned"
+        ]].copy()
+        
+        # Aggiungiamo i metadati richiesti dagli ERP moderni
+        df_erp_clean.rename(columns={
+            "Code(s)": "NACE_Code",
+            "Absolute CapEx (€)": "CapEx_Amount",
+            "Eligible (Y/N)": "Taxonomy_Eligible",
+            "Taxonomy-aligned": "Taxonomy_Aligned"
+        }, inplace=True)
+        
+        df_erp_clean["Environmental_Objective"] = np.where(df_erp_clean["Taxonomy_Eligible"] == "Y", "CCM", "N/A")
+        
+        csv_erp_data = df_erp_clean.to_csv(index=False, sep=",")
+        
+        c_erp1, c_erp2 = st.columns([1, 2])
+        c_erp1.download_button(label="📥 Scarica File di Ingestion ERP (.CSV)", data=csv_erp_data, file_name="ERP_Taxonomy_Tagging.csv", mime="text/csv")
+        c_erp2.info("Questo file prenderà le commesse inserite nel Tab 3 e assocerà i Tag Finanziari pronti per essere letti dal database contabile.")
+    else:
+        st.warning("Nessuna commessa inserita. Compila il Tab Tassonomia per generare il file di ingestion ERP.")
