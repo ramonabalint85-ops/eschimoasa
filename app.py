@@ -52,7 +52,6 @@ df_base = generate_offline_data()
 with st.sidebar:
     st.header("🤖 1. AI Data Extraction (OpenAI)")
     
-    # Campo per la chiave API necessaria per fare la chiamata reale
     api_key = st.text_input("Inserisci OpenAI API Key", type="password", help="Serve per leggere e analizzare il PDF.")
     uploaded_pdf = st.file_uploader("Carica Bilancio Sostenibilità (PDF)", type="pdf")
     
@@ -63,16 +62,13 @@ with st.sidebar:
             else:
                 with st.spinner("Estrazione testo dal PDF in corso..."):
                     try:
-                        # 1. Estrazione del testo dal PDF
                         pdf_reader = PyPDF2.PdfReader(uploaded_pdf)
                         testo_estratto = ""
-                        # Leggiamo le prime 15 pagine per non superare i limiti di token
                         for page in pdf_reader.pages[:15]:
                             testo_estratto += page.extract_text() + "\n"
                         
                         st.info("Testo estratto! Analisi LLM in corso...")
                         
-                        # 2. Chiamata reale a OpenAI
                         client = OpenAI(api_key=api_key)
                         prompt = f"""
                         Agisci come un analista ESG esperto. Leggi il seguente estratto di un bilancio di sostenibilità/finanziario.
@@ -96,7 +92,6 @@ with st.sidebar:
                             response_format={ "type": "json_object" }
                         )
                         
-                        # 3. Parsing del risultato e aggiornamento automatico
                         dati_estratti = json.loads(response.choices[0].message.content)
                         
                         st.session_state.revenue = int(dati_estratti.get("revenue", 0))
@@ -114,14 +109,35 @@ with st.sidebar:
                         st.error(f"Errore durante l'elaborazione: {e}")
     
     st.header("📡 2. API Finanziarie & Registri")
-    ticker = st.text_input("Ticker Yahoo Finance (es. ENEL.MI)")
+    ticker = st.text_input("Ticker Yahoo Finance (es. ENEL.MI o AAPL)")
     piva = st.text_input("Partita IVA (Per Registro EEA/ETS)")
     
+    # INTEGRAZIONE YFINANCE REALE
     if st.button("Sincronizza Database Pubblici"):
         with st.spinner("Connessione a YFinance, EEA e SBTi..."):
-            time.sleep(1.5)
-            st.success("Sincronizzazione completata!")
-            if piva: st.session_state.sbti_approved = True
+            try:
+                if ticker:
+                    stock = yf.Ticker(ticker)
+                    info = stock.info
+                    
+                    # Recupera i ricavi (Revenue)
+                    if 'totalRevenue' in info and info['totalRevenue'] is not None:
+                        st.session_state.revenue = int(info['totalRevenue'])
+                        
+                        # Stima l'OpEx (Ricavi - EBITDA). Se l'EBITDA non c'è, usa una stima forfettaria (es. 80% dei ricavi)
+                        ebitda = info.get('ebitda')
+                        if ebitda is not None:
+                            st.session_state.opex = int(st.session_state.revenue - ebitda)
+                        else:
+                            st.session_state.opex = int(st.session_state.revenue * 0.8)
+                            
+                st.success("Sincronizzazione completata! Dati di mercato aggiornati.")
+                if piva: st.session_state.sbti_approved = True
+                time.sleep(1.5)
+                st.rerun() # Ricarica per mostrare i nuovi dati estratti da YFinance
+                
+            except Exception as e:
+                st.error(f"Impossibile scaricare dati per '{ticker}'. Verifica che il ticker sia corretto.")
 
     if st.session_state.sbti_approved:
         st.markdown("🎯 **Status:** `✅ Target SBTi Approvato`")
@@ -129,14 +145,15 @@ with st.sidebar:
     st.divider()
     st.header("⚙️ 3. Dati Finanziari Asset")
     selected_country = st.selectbox("Posizione", df_base['Paese'].unique(), index=3) 
-    revenue = st.number_input("Ricavi Annuali (€)", value=st.session_state.revenue, step=1_000_000)
-    opex = st.number_input("Costi Operativi (OpEx) (€)", value=st.session_state.opex, step=1_000_000)
+    # Usiamo lo State per popolare automaticamente i campi in base a cosa estrae OpenAI o YFinance
+    revenue = st.number_input("Ricavi Annuali (€/$/Valuta)", value=st.session_state.revenue, step=1_000_000)
+    opex = st.number_input("Costi Operativi (OpEx) (€/$/Valuta)", value=st.session_state.opex, step=1_000_000)
     
     st.divider()
     st.header("🌫️ 4. Protocollo GHG")
-    st.number_input("Scope 1: Dirette", step=5000, key='scope1', on_change=sync_from_scopes)
-    st.number_input("Scope 2: Elettricità", step=5000, key='scope2', on_change=sync_from_scopes)
-    st.number_input("Scope 3: Supply Chain", step=5000, key='scope3', on_change=sync_from_scopes)
+    st.number_input("Scope 1: Dirette", value=st.session_state.scope1, step=5000, key='scope1', on_change=sync_from_scopes)
+    st.number_input("Scope 2: Elettricità", value=st.session_state.scope2, step=5000, key='scope2', on_change=sync_from_scopes)
+    st.number_input("Scope 3: Supply Chain", value=st.session_state.scope3, step=5000, key='scope3', on_change=sync_from_scopes)
     emissions_tot = get_tot_emissions()
     st.info(f"**Totale Impronta: {emissions_tot:,} tCO2**")
     
