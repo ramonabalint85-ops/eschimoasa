@@ -1,4 +1,6 @@
 streamlit
 pandas
 plotly
-pyam-iamc
+yfinance
+fpdf2
+openpyxl
