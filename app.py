@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import yfinance as yf
+import requests
 from fpdf import FPDF
 import time
 import numpy as np
@@ -114,14 +115,20 @@ with st.sidebar:
     
     # INTEGRAZIONE YFINANCE REALE
     if st.button("Sincronizza Database Pubblici"):
-        with st.spinner("Connessione a YFinance, EEA e SBTi..."):
+        with st.spinner("Connessione a YFinance, EEA e SBTi in corso..."):
             if not ticker:
                 st.warning("Inserisci prima un Ticker valido (es. ENEL.MI o AAPL).")
             else:
                 try:
-                    stock = yf.Ticker(ticker)
+                    # 1. Creiamo una sessione che si finge un normale browser web (Google Chrome)
+                    session = requests.Session()
+                    session.headers.update({
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+                    })
                     
-                    # Inizializziamo variabili temporanee
+                    # 2. Passiamo la sessione mascherata a YFinance
+                    stock = yf.Ticker(ticker, session=session)
+                    
                     new_rev = None
                     new_ebitda = None
                     
@@ -131,7 +138,7 @@ with st.sidebar:
                         new_rev = info.get('totalRevenue')
                         new_ebitda = info.get('ebitda')
                     
-                    # PIANO B: Se 'info' fallisce o è vuoto, andiamo a spulciare il bilancio reale (financials)
+                    # PIANO B: Se 'info' fallisce, andiamo sui financials
                     if new_rev is None:
                         fin = stock.financials
                         if not fin.empty:
@@ -140,20 +147,18 @@ with st.sidebar:
                             if 'EBITDA' in fin.index:
                                 new_ebitda = fin.loc['EBITDA'].iloc[0]
                                 
-                    # Se abbiamo trovato i ricavi, aggiorniamo il sistema
+                    # Aggiornamento dati
                     if new_rev:
                         st.session_state.revenue = int(new_rev)
                         if new_ebitda and not pd.isna(new_ebitda):
                             st.session_state.opex = int(new_rev - new_ebitda)
                         else:
-                            # Stima forfettaria se manca l'EBITDA
                             st.session_state.opex = int(new_rev * 0.8)
                             
-                        st.success(f"Dati di mercato aggiornati per {ticker.upper()}!")
+                        st.success(f"Dati estratti con successo per {ticker.upper()}!")
                     else:
-                        st.warning(f"Connesso a {ticker}, ma Yahoo Finance non ha esposto pubblicamente i Ricavi oggi. Riprova più tardi.")
+                        st.warning(f"Connesso a {ticker}, ma i dati sui ricavi non sono disponibili al momento.")
 
-                    # Gestione P.IVA per SBTi
                     if piva: 
                         st.session_state.sbti_approved = True
                     
@@ -161,7 +166,8 @@ with st.sidebar:
                     st.rerun()
 
                 except Exception as e:
-                    st.error(f"Il ticker '{ticker}' non è stato trovato o Yahoo ha bloccato la richiesta. Dettaglio errore: {e}")
+                    st.error(f"Errore persistente o Ticker non valido. Dettaglio: {e}")
+                    
     if st.session_state.sbti_approved:
         st.markdown("🎯 **Status:** `✅ Target SBTi Approvato`")
 
