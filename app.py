@@ -54,18 +54,18 @@ df_base = generate_offline_data()
 
 @st.cache_data
 def load_cn_codes():
-    # Tenta di leggere il file CSV reale se presente nella cartella, altrimenti usa un database di fallback robusto
+    # Tenta di leggere il file CSV reale, altrimenti usa il fallback
     try:
         df_cn = pd.read_csv("CBAM Self Assessment Tool Version 1.1.xlsx - CN Codes.csv")
-        df_cn['CN Code'] = df_cn['CN Code'].astype(str).str.zfill(8) # Assicura le 8 cifre
+        df_cn['CN Code'] = df_cn['CN Code'].astype(str).str.zfill(8)
         return df_cn
     except:
-        # Fallback Database basato sui dati ufficiali UE
+        # Fallback esteso per permettere di testare l'autocompletamento
         data = {
-            'Main Category': ['Cement', 'Cement', 'Fertilizers', 'Fertilizers', 'Iron and Steel', 'Iron and Steel', 'Aluminium', 'Aluminium', 'Hydrogen', 'Electricity', 'Other'],
-            'CN Code': ['25070080', '25231000', '31021010', '28141000', '72000000', '73041100', '76010000', '76041010', '28041000', '27160000', '99999999'],
-            'Goods concerned': ['Other kaolinic clays (Calcined)', 'Cement clinkers', 'Urea', 'Anhydrous ammonia', 'Iron and steel products', 'Tubes and pipes of iron/steel', 'Unwrought aluminium', 'Aluminium bars, rods and profiles', 'Hydrogen', 'Electrical energy', 'Altre merci NON soggette a CBAM'],
-            'CBAM Applies': ['Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'No']
+            'Main Category': ['Cement', 'Cement', 'Cement', 'Fertilizers', 'Fertilizers', 'Iron and Steel', 'Iron and Steel', 'Iron and Steel', 'Aluminium', 'Aluminium', 'Hydrogen', 'Electricity', 'Other'],
+            'CN Code': ['25070080', '25231000', '25232100', '31021010', '28141000', '72000000', '72011011', '73041100', '76010000', '76041010', '28041000', '27160000', '99999999'],
+            'Goods concerned': ['Other kaolinic clays', 'Cement clinkers', 'White Portland cement', 'Urea', 'Anhydrous ammonia', 'Iron and steel products', 'Non-alloy pig iron', 'Tubes and pipes of iron/steel', 'Unwrought aluminium', 'Aluminium bars, rods and profiles', 'Hydrogen', 'Electrical energy', 'Altre merci NON soggette a CBAM'],
+            'CBAM Applies': ['Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'No']
         }
         return pd.DataFrame(data)
 
@@ -160,7 +160,7 @@ st.title("🌍 Piattaforma CarbonRisk AI")
 st.markdown("Seleziona una delle schede qui sotto per procedere con l'analisi strategica.")
 
 t_home, t_rischi, t_tax, t_cbam, t_down = st.tabs([
-    "🏠 Home", "📊 Analisi Rischi", "🇪🇺 Tassonomia", "🌍 CBAM (Assessment CN)", "📥 Download Ufficiali"
+    "🏠 Home", "📊 Analisi Rischi", "🇪🇺 Tassonomia", "🌍 CBAM (Self-Assessment)", "📥 Download Ufficiali"
 ])
 
 # --- TAB 1: HOME ---
@@ -259,23 +259,206 @@ with t_rischi:
             fig_dopo.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
             st.plotly_chart(fig_dopo, use_container_width=True)
 
-# --- TAB 3: TASSONOMIA UE ---
+        st.divider()
+        st.subheader("3. Carbon Offsetting (Crediti VERs per Net Zero)")
+        prezzo_ver = st.number_input("Prezzo Mercato Volontario (€/tCO2)", value=0)
+        costo_offsetting = st.session_state.em_final * prezzo_ver
+        st.metric("Costo Annuale per raggiungere neutralità climatica assoluta", f"€ {costo_offsetting:,.0f}")
+
+# --- TAB 3: TASSONOMIA UE (COMPLETA E BELLA) ---
 with t_tax:
     st.header("🇪🇺 Reporting Tassonomia UE (Struttura Annex II)")
-    st.markdown("Valutazione CapEx attiva nel sistema. Le funzionalità di allineamento DNSH e NACE restano attive (Grafici e Logiche interattive).")
+    st.markdown("Dichiara la totalità del tuo CapEx. Le attività non coperte dalla Tassonomia (es. Commercio, Finanza, Estrazione Fossile) verranno classificate in automatico come **Non Ammissibili (Non-Eligible)**.")
+
+    # Database NACE Esteso a includere settori NON eligibili
+    tassonomia_db = {
+        "Agricoltura, silvicoltura e pesca": {
+            "Coltivazione di colture non perenni": "A1.1", 
+            "Coltivazione di colture perenni": "A1.2",
+            "Allevamento di bestiame": "A1.4",
+            "Silvicoltura e gestione forestale": "A2.1"
+        },
+        "Attività manifatturiere": {
+            "Fabbricazione di cemento": "C23.51", 
+            "Fabbricazione di alluminio": "C24.42",
+            "Fabbricazione di ferro e acciaio": "C24.1", 
+            "Fabbricazione di materie plastiche": "C20.16",
+            "Fabbricazione di prodotti chimici": "C20.1",
+            "Fabbricazione di batterie": "C27.2",
+            "Fabbricazione di veicoli a basse emissioni": "C29.1"
+        },
+        "Fornitura di energia": {
+            "Produzione di energia solare fotovoltaica": "D35.11", 
+            "Produzione di energia eolica": "D35.11", 
+            "Produzione di energia idroelettrica": "D35.11",
+            "Trasmissione e distribuzione di energia elettrica": "D35.12",
+            "Stoccaggio di energia elettrica": "D35.11"
+        },
+        "Acqua e Rifiuti": {
+            "Raccolta e depurazione delle acque di scarico": "E37.00",
+            "Recupero dei materiali (Riciclo)": "E38.32",
+            "Raccolta di rifiuti non pericolosi": "E38.11"
+        },
+        "Trasporto e magazzinaggio": {
+            "Trasporto passeggeri interurbano": "H49.39", 
+            "Trasporto merci su strada": "H49.41",
+            "Trasporto marittimo e costiero": "H50.1",
+            "Infrastrutture mobilità zero emissioni": "F42.11"
+        },
+        "Costruzioni e attività immobiliari": {
+            "Costruzione di nuovi edifici": "F41.2", 
+            "Ristrutturazione di edifici esistenti": "F41.2",
+            "Acquisto e proprietà edifici (Real Estate)": "L68.2"
+        },
+        "Informazione e comunicazione (ICT)": {
+            "Elaborazione dati e hosting (Data Center)": "J63.11",
+            "Programmazione informatica (Soluzioni Clima)": "J62.01"
+        },
+        # --- SETTORI NON AMMISSIBILI ---
+        "Attività estrattive (Non Ammissibili)": {
+            "Estrazione di carbone": "B05",
+            "Estrazione di petrolio greggio e gas naturale": "B06",
+            "Altre attività estrattive": "B08"
+        },
+        "Commercio all'ingrosso e dettaglio (Non Ammissibili)": {
+            "Commercio di autoveicoli e motocicli": "G45",
+            "Commercio all'ingrosso": "G46",
+            "Commercio al dettaglio": "G47"
+        },
+        "Attività finanziarie e assicurative (Non Ammissibili)": {
+            "Intermediazione monetaria (Banche)": "K64",
+            "Assicurazioni e fondi pensione": "K65"
+        },
+        "Altre attività di servizi (Non Ammissibili)": {
+            "Servizi di ristorazione e alloggio": "I55-56",
+            "Attività professionali, scientifiche e tecniche": "M",
+            "Sanità e assistenza sociale": "Q",
+            "Altre attività non classificate o generali": "N/A"
+        }
+    }
+
+    c_tax_head1, c_tax_head2 = st.columns([1, 2])
+    c_tax_head1.metric("CapEx Totale di Riferimento", f"€ {st.session_state.capex_totale:,.0f}")
+    
+    with st.expander("➕ Aggiungi attività al report CapEx", expanded=True):
+        col_tax1, col_tax2 = st.columns(2)
+
+        with col_tax1:
+            settore = st.selectbox("Macro-Settore", list(tassonomia_db.keys()))
+            attivita = st.selectbox("Attività Economica", list(tassonomia_db[settore].keys()))
+            nace_code = tassonomia_db[settore][attivita]
+            capex_attivita = st.number_input("Absolute CapEx (€)", min_value=0, value=0, step=100000)
+
+        # Logica di Ammissibilità ed Emissioni
+        is_eligible = "Non Ammissibili" not in settore
+        
+        attivita_lower = attivita.lower()
+        if not is_eligible:
+            unita, soglia, target_unit = "N/A", 0, "N/A"
+        elif "edifici" in attivita_lower or "real estate" in attivita_lower: unita, soglia, target_unit = "m2 Gestiti", 80.0, "kWh/m2"
+        elif "trasporto" in attivita_lower or "mobilità" in attivita_lower: unita, soglia, target_unit = "tkm", 50.0, "gCO2/tkm"
+        elif "cemento" in attivita_lower: unita, soglia, target_unit = "Tonnellate prodotte", 0.72, "tCO2/ton"
+        elif "acciaio" in attivita_lower or "alluminio" in attivita_lower: unita, soglia, target_unit = "Tonnellate", 1.3, "tCO2/ton"
+        elif "energia" in settore.lower() or "fotovoltaica" in attivita_lower: unita, soglia, target_unit = "MWh", 100.0, "gCO2/kWh"
+        elif "data center" in attivita_lower: unita, soglia, target_unit = "Terabyte (TB)", 1.2, "PUE"
+        else: unita, soglia, target_unit = "Unità", 1.0, "tCO2/unità"
+
+        with col_tax2:
+            if not is_eligible:
+                st.error("⚠️ L'attività selezionata **NON è attualmente ammissibile** ai sensi della Tassonomia UE. I test tecnici non sono applicabili.")
+                tsc_passed = False
+            else:
+                st.markdown(f"**Test Substantial Contribution (CCM):** `<= {soglia} {target_unit}`")
+                prod = st.number_input(f"Volume Annuo ({unita})", value=0, step=10000)
+                
+                int_calc = (st.session_state.em_final / prod) if prod > 0 else 0
+                if target_unit.startswith("g"): int_calc *= 1000 
+                elif "PUE" in target_unit: int_calc = 1.0 + (st.session_state.em_final / 1000000)
+                
+                tsc_passed = int_calc <= soglia and prod > 0
+                st.metric("Substantial Contribution", "Superato (Y)" if tsc_passed else "Non Superato (N)", delta_color="normal" if tsc_passed else "inverse")
+            
+        if st.button("➕ Inserisci in Tabella"):
+            if capex_attivita > 0:
+                st.session_state.tax_portfolio.append({
+                    "Economic activities": attivita,
+                    "Code(s)": nace_code,
+                    "Absolute CapEx (€)": capex_attivita,
+                    "Eligible (Y/N)": "Y" if is_eligible else "N",
+                    "TSC Passed": "Y" if (tsc_passed and is_eligible) else "N",
+                    "DNSH": "Y" if is_eligible else "N", 
+                    "Safeguards": "Y" if is_eligible else "N", 
+                })
+                st.success("Aggiunto!")
+                time.sleep(0.5)
+                st.rerun()
+            else:
+                st.error("Il CapEx deve essere > 0.")
+
+    st.divider()
+    st.subheader("📊 EU Taxonomy CapEx Editor (Interattivo)")
     
     if st.session_state.tax_portfolio:
         df_tax = pd.DataFrame(st.session_state.tax_portfolio)
-        edited_df = st.data_editor(df_tax, use_container_width=True, num_rows="dynamic", key="tax_editor")
-        # Mantengo logiche di base per brevità in questa vista
-        st.session_state.tax_portfolio = edited_df.to_dict('records')
-    else:
-        st.info("Per popolare questa sezione, aggiungi le attività dal menu dedicato.")
+        
+        st.markdown("✏️ **Personalizza e Pulisci:** Modifica direttamente i valori nella tabella (es. cambia i DNSH in 'N' per vedere l'impatto). Per cancellare una riga, seleziona la spunta a sinistra e premi Canc/Backspace.")
+        
+        edited_df = st.data_editor(
+            df_tax,
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={
+                "Economic activities": st.column_config.TextColumn("Attività Economica", width="medium"),
+                "Code(s)": st.column_config.TextColumn("NACE", width="small"),
+                "Absolute CapEx (€)": st.column_config.NumberColumn("CapEx (€)", format="€ %d", width="small"),
+                "Eligible (Y/N)": st.column_config.TextColumn("Ammissibile", disabled=True, width="small"),
+                "TSC Passed": st.column_config.TextColumn("TSC (Y/N)", disabled=True, width="small"),
+                "DNSH": st.column_config.SelectboxColumn("DNSH", options=["Y", "N", "N/A"], required=True, width="small"),
+                "Safeguards": st.column_config.SelectboxColumn("Min. Safeguards", options=["Y", "N", "N/A"], required=True, width="small")
+            },
+            key="tax_editor"
+        )
+        
+        # Logica rigorosa di Allineamento (deve essere ammissibile E superare tutti i test)
+        edited_df["Aligned"] = (edited_df["Eligible (Y/N)"] == "Y") & (edited_df["TSC Passed"] == "Y") & (edited_df["DNSH"] == "Y") & (edited_df["Safeguards"] == "Y")
+        st.session_state.tax_portfolio = edited_df.drop(columns=["Aligned"]).to_dict('records')
+        
+        if st.button("🗑️ Svuota Tutto"):
+            st.session_state.tax_portfolio = []
+            st.rerun()
+            
+        # Calcolo KPI per Dashboard
+        capex_tot = st.session_state.capex_totale
+        capex_eligible = edited_df[edited_df["Eligible (Y/N)"] == "Y"]["Absolute CapEx (€)"].sum()
+        capex_non_eligible = edited_df[edited_df["Eligible (Y/N)"] == "N"]["Absolute CapEx (€)"].sum()
+        capex_aligned = edited_df[edited_df["Aligned"] == True]["Absolute CapEx (€)"].sum()
+        
+        # Adattiamo il denominatore se il portafoglio supera la baseline iniziale
+        capex_dichiarato = capex_eligible + capex_non_eligible
+        if capex_dichiarato > capex_tot: capex_tot = capex_dichiarato
+        
+        c_kpi1, c_kpi2 = st.columns([1, 1.5])
+        with c_kpi1:
+            st.metric("Total Denominator (CapEx)", f"€ {capex_tot:,.0f}")
+            st.metric("Taxonomy-aligned proportion (%)", f"{(capex_aligned/capex_tot*100) if capex_tot>0 else 0:.2f} %")
+            st.metric("Eligible proportion (%)", f"{(capex_eligible/capex_tot*100) if capex_tot>0 else 0:.2f} %")
+            
+        with c_kpi2:
+            # Ricalcolo quote non esaminate per far tornare a 100 il grafico
+            quota_non_esaminata = capex_tot - (capex_eligible + capex_non_eligible)
+            
+            fig_pie = go.Figure(data=[go.Pie(
+                labels=["Aligned", "Eligible Not Aligned", "Non-Eligible", "Da Classificare"], 
+                values=[capex_aligned, capex_eligible - capex_aligned, capex_non_eligible, quota_non_esaminata], 
+                hole=.4, marker_colors=['#00B050', '#FECB52', '#C00000', '#D3D3D3']
+            )])
+            fig_pie.update_layout(margin=dict(t=20, b=0, l=0, r=0))
+            st.plotly_chart(fig_pie, use_container_width=True)
 
-# --- TAB 4: CBAM SELF-ASSESSMENT TOOL (INTEGRATO CON CODICI CN) ---
+# --- TAB 4: CBAM SELF-ASSESSMENT TOOL CON SEARCH BAR ---
 with t_cbam:
     st.header("🌍 CBAM Self-Assessment Tool (Basato su Codici CN)")
-    st.markdown("Cerca il **Codice CN (Nomenclatura Combinata a 8 cifre)** della merce. Il sistema incrocerà i dati col database UE per determinare l'applicabilità di Annex I.")
+    st.markdown("Inizia a digitare il **Codice CN (Nomenclatura Combinata a 8 cifre)** o la descrizione della merce. Il sistema autocompleterà la ricerca e incrocerà i dati col database UE per determinare l'applicabilità di Annex I.")
     
     # Dati Paesi di Riferimento CBAM
     paesi_origine = {
@@ -289,22 +472,26 @@ with t_cbam:
         "Unione Europea (Produzione Interna)": {"Tax": 0.0, "Exempt": True}
     }
 
-    # Creazione della stringa di ricerca per la selectbox
+    # Creazione della stringa di ricerca combinata per l'autocompletamento
     cn_options = df_cn_database.apply(lambda row: f"{row['CN Code']} - {row['Goods concerned']} ({row['Main Category']})", axis=1).tolist()
 
     with st.expander("➕ Compila Nuova Spedizione Doganale", expanded=True):
         col_cb1, col_cb2 = st.columns(2)
         
         with col_cb1:
-            # Selezione tramite Codice CN
-            merce_selezionata = st.selectbox("Cerca Codice CN o Descrizione Merce", cn_options)
+            # BARRA DI RICERCA INTELLIGENTE: Index=None la lascia vuota all'inizio obbligando la ricerca
+            merce_selezionata = st.selectbox(
+                "🔍 Cerca Codice CN o Descrizione Merce (inizia a digitare per filtrare...)", 
+                options=cn_options,
+                index=None,
+                placeholder="Es. 25231000 o Cemento..."
+            )
             
-            # Estrazione del codice CN selezionato (prime 8 cifre)
-            codice_cn_estratto = merce_selezionata.split(" - ")[0]
-            dati_merce = df_cn_database[df_cn_database['CN Code'] == codice_cn_estratto].iloc[0]
-            
-            st.info(f"**Categoria Merceologica:** {dati_merce['Main Category']}")
-            
+            if merce_selezionata:
+                codice_cn_estratto = merce_selezionata.split(" - ")[0]
+                dati_merce = df_cn_database[df_cn_database['CN Code'] == codice_cn_estratto].iloc[0]
+                st.success(f"**Categoria rilevata:** {dati_merce['Main Category']}")
+                
             emissioni_merce = st.number_input("Emissioni Incorporate Stimabili (tCO2)", min_value=0, value=0, step=100)
             
         with col_cb2:
@@ -312,19 +499,17 @@ with t_cbam:
             importato_ue = st.selectbox("Rilasciato per la libera pratica in UE? (Art. 203 UCC)", ["Sì", "No (Transito)"])
             valore_merce = st.number_input("Valore Intrinseco Spedizione (€)", min_value=0.0, value=0.0, step=100.0)
 
-        # ---------------------------------------------------------
-        # ALBERO DECISIONALE UFFICIALE UE (Self Assessment Logic)
-        # ---------------------------------------------------------
-        is_annex_i = dati_merce['CBAM Applies'] # "Yes" o "No" dal CSV
-        is_3rd_country = "No" if paesi_origine[origine_merce]["Exempt"] else "Sì"
-        is_over_150 = "Sì" if valore_merce > 150.0 else "No"
-        is_free_circulation = "Sì" if importato_ue == "Sì" else "No"
-        
-        # Applicabilità Finale
-        cbam_applies = (is_annex_i == "Yes") and (is_3rd_country == "Sì") and (is_over_150 == "Sì") and (is_free_circulation == "Sì")
-
+        # Se l'utente ha selezionato qualcosa dalla barra di ricerca, processa la logica
         if st.button("Valuta Dogana e Registra"):
-            if emissioni_merce >= 0:
+            if merce_selezionata and emissioni_merce >= 0:
+                # Logica Albero Decisionale
+                is_annex_i = dati_merce['CBAM Applies'] 
+                is_3rd_country = "No" if paesi_origine[origine_merce]["Exempt"] else "Sì"
+                is_over_150 = "Sì" if valore_merce > 150.0 else "No"
+                is_free_circulation = "Sì" if importato_ue == "Sì" else "No"
+                
+                cbam_applies = (is_annex_i == "Yes") and (is_3rd_country == "Sì") and (is_over_150 == "Sì") and (is_free_circulation == "Sì")
+
                 st.session_state.cbam_portfolio.append({
                     "CN Code": codice_cn_estratto,
                     "Descrizione": dati_merce['Goods concerned'],
@@ -339,9 +524,11 @@ with t_cbam:
                     "CBAM APPLICABILE": "SÌ" if cbam_applies else "NO",
                     "Tassa Estera": paesi_origine[origine_merce]["Tax"] if is_3rd_country == "Sì" else 0.0
                 })
-                st.success("Analisi doganale registrata!")
+                st.success("Analisi doganale registrata con successo!")
                 time.sleep(0.5)
                 st.rerun()
+            else:
+                st.error("Devi cercare e selezionare una merce valida dal menù a tendina.")
 
     st.divider()
     st.subheader("📋 Registro Autovalutazione CBAM")
@@ -349,14 +536,13 @@ with t_cbam:
     if st.session_state.cbam_portfolio:
         df_cbam = pd.DataFrame(st.session_state.cbam_portfolio)
         
-        # Mettiamo in evidenza le colonne calcolate
         st.dataframe(df_cbam.style.applymap(lambda x: "background-color: #ffcccc" if x == "NO" else "background-color: #ccffcc" if x == "SÌ" else "", subset=["CBAM APPLICABILE"]), use_container_width=True)
         
         if st.button("🗑️ Cancella Registro CBAM"):
             st.session_state.cbam_portfolio = []
             st.rerun()
 
-        # CALCOLO FINANZIARIO SULLE SOLE MERCI CONFORMI
+        # CALCOLO FINANZIARIO
         df_applicabile = df_cbam[df_cbam["CBAM APPLICABILE"] == "SÌ"]
         emissioni_importate_tot = df_applicabile["Emissioni (tCO2)"].sum()
         
@@ -396,7 +582,7 @@ with t_cbam:
     else:
         st.info("Seleziona il Codice CN e compila i dati doganali per verificare se le tue merci sono soggette al CBAM.")
 
-# --- TAB 5: DOWNLOAD (CON TEMPLATE UFFICIALI) ---
+# --- TAB 5: DOWNLOAD ---
 with t_down:
     st.header("📥 Esportazione Documentazione Ufficiale")
     
@@ -418,7 +604,29 @@ with t_down:
         st.markdown("Modello scaricabile basato su Tab 3.")
         if st.session_state.tax_portfolio:
             df_tax_export = pd.DataFrame(st.session_state.tax_portfolio)
-            csv_tax = df_tax_export.to_csv(index=False, sep=";")
+            capex_dichiarato = df_tax_export["Absolute CapEx (€)"].sum()
+            tot_capex = st.session_state.capex_totale if st.session_state.capex_totale > capex_dichiarato else capex_dichiarato
+            
+            df_tax_export["Proportion of CapEx (%)"] = (df_tax_export["Absolute CapEx (€)"] / tot_capex * 100).round(2).astype(str) + "%"
+            df_tax_export["Taxonomy-aligned"] = (df_tax_export["Eligible (Y/N)"] == "Y") & (df_tax_export["TSC Passed"] == "Y") & (df_tax_export["DNSH"] == "Y") & (df_tax_export["Safeguards"] == "Y")
+            df_tax_export["Taxonomy-aligned proportion (%)"] = np.where(df_tax_export["Taxonomy-aligned"], df_tax_export["Proportion of CapEx (%)"], "0%")
+            df_tax_export["Category"] = np.where(df_tax_export["Eligible (Y/N)"] == "Y", "Transitional", "Non-Eligible")
+            
+            export_cols = {
+                "Economic activities": "Economic activities",
+                "Code(s)": "Code(s)",
+                "Absolute CapEx (€)": "Absolute CapEx",
+                "Proportion of CapEx (%)": "Proportion of CapEx",
+                "Eligible (Y/N)": "Taxonomy-Eligible (Y/N)",
+                "TSC Passed": "Substantial contribution criteria - CCM",
+                "DNSH": "DNSH criteria (Y/N)",
+                "Safeguards": "Minimum Safeguards (Y/N)",
+                "Taxonomy-aligned proportion (%)": "Taxonomy-aligned proportion of CapEx",
+                "Category": "Category (enabling/transitional)"
+            }
+            
+            df_final_export = df_tax_export.rename(columns=export_cols)[list(export_cols.values())]
+            csv_tax = df_final_export.to_csv(index=False, sep=";")
             st.download_button(label="📥 Scarica Annex II (.CSV)", data=csv_tax, file_name="EU_Taxonomy_Template.csv", mime="text/csv")
         else:
             st.warning("Compila Tab Tassonomia prima di esportare.")
@@ -430,7 +638,6 @@ with t_down:
         if st.session_state.cbam_portfolio:
             df_cbam_export = pd.DataFrame(st.session_state.cbam_portfolio)
             
-            # Formattazione per matchare il Template Excel fornito
             export_cbam_cols = {
                 "CN Code": "CN Code of good",
                 "Descrizione": "Goods Description",
@@ -442,11 +649,9 @@ with t_down:
             }
             
             df_final_cbam = df_cbam_export.rename(columns=export_cbam_cols)[list(export_cbam_cols.values())]
-            
-            # Sostituiamo i Sì/No con l'inglese per compatibilità col tool europeo
             df_final_cbam.replace({"Sì": "Yes", "No": "No", "SÌ": "CBAM Applies", "NO": "No Action Required"}, inplace=True)
             
-            csv_cbam_data = df_final_cbam.to_csv(index=False, sep=",") # Uso virgola standard internazionale
+            csv_cbam_data = df_final_cbam.to_csv(index=False, sep=",") 
             
             st.download_button(
                 label="📥 Scarica Modello CBAM (.CSV)", 
