@@ -4,3 +4,4 @@ plotly
 yfinance
 fpdf2
 openpyxl
+geopy
