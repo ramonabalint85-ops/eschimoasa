@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import yfinance as yf
-import requests
 from fpdf import FPDF
 import time
 import numpy as np
@@ -51,17 +50,30 @@ df_base = generate_offline_data()
 
 # --- SIDEBAR: INTEGRAZIONI AI & API ---
 with st.sidebar:
-    st.header("🤖 1. AI Data Extraction (OpenAI)")
+    st.header("🤖 1. AI Data Extraction")
     
-    api_key = st.text_input("Inserisci OpenAI API Key", type="password", help="Serve per leggere e analizzare il PDF.")
+    # Campo API Key reso OPZIONALE per permettere la simulazione
+    api_key = st.text_input("OpenAI API Key (Opzionale)", type="password", help="Lascia vuoto per testare la simulazione gratuita.")
     uploaded_pdf = st.file_uploader("Carica Bilancio Sostenibilità (PDF)", type="pdf")
     
     if uploaded_pdf:
         if st.button("Analizza con Intelligenza Artificiale"):
-            if not api_key:
-                st.error("Inserisci una chiave API valida per procedere.")
-            else:
-                with st.spinner("Estrazione testo dal PDF in corso..."):
+            with st.spinner("Lettura del documento in corso..."):
+                if not api_key:
+                    # SIMULAZIONE: L'utente non ha messo la chiave, simuliamo l'estrazione
+                    time.sleep(2)
+                    st.session_state.revenue = 145_000_000
+                    st.session_state.opex = 90_000_000
+                    st.session_state.scope1 = 12500
+                    st.session_state.scope2 = 8500
+                    st.session_state.scope3 = 42000
+                    st.session_state.sbti_approved = True
+                    
+                    st.success("SIMULAZIONE COMPLETATA! Dati fittizi caricati con successo.")
+                    time.sleep(1.5)
+                    st.rerun()
+                else:
+                    # REALE: Chiamata effettiva a OpenAI
                     try:
                         pdf_reader = PyPDF2.PdfReader(uploaded_pdf)
                         testo_estratto = ""
@@ -72,19 +84,14 @@ with st.sidebar:
                         
                         client = OpenAI(api_key=api_key)
                         prompt = f"""
-                        Agisci come un analista ESG esperto. Leggi il seguente estratto di un bilancio di sostenibilità/finanziario.
-                        Estrai i seguenti dati e restituiscili ESCLUSIVAMENTE come oggetto JSON puro, senza testo aggiuntivo o formattazione markdown:
-                        - "revenue": Ricavi o fatturato (in numero intero).
-                        - "opex": Costi operativi (in numero intero).
-                        - "scope1": Emissioni Scope 1 in tCO2 (numero intero).
-                        - "scope2": Emissioni Scope 2 in tCO2 (numero intero).
-                        - "scope3": Emissioni Scope 3 in tCO2 (numero intero).
-                        - "sbti_approved": true se il documento menziona target validati dalla Science Based Targets initiative (SBTi), altrimenti false.
-                        
-                        Se un dato non è presente, inserisci 0.
-                        
-                        Testo del documento:
-                        {testo_estratto[:15000]}
+                        Estrai i seguenti dati e restituiscili ESCLUSIVAMENTE come JSON:
+                        - "revenue": Ricavi in numero intero.
+                        - "opex": Costi operativi in numero intero.
+                        - "scope1": Scope 1 in tCO2 (numero intero).
+                        - "scope2": Scope 2 in tCO2 (numero intero).
+                        - "scope3": Scope 3 in tCO2 (numero intero).
+                        - "sbti_approved": true o false se target approvati SBTi.
+                        Testo: {testo_estratto[:15000]}
                         """
                         
                         response = client.chat.completions.create(
@@ -94,7 +101,6 @@ with st.sidebar:
                         )
                         
                         dati_estratti = json.loads(response.choices[0].message.content)
-                        
                         st.session_state.revenue = int(dati_estratti.get("revenue", 0))
                         st.session_state.opex = int(dati_estratti.get("opex", 0))
                         st.session_state.scope1 = int(dati_estratti.get("scope1", 0))
@@ -102,32 +108,24 @@ with st.sidebar:
                         st.session_state.scope3 = int(dati_estratti.get("scope3", 0))
                         st.session_state.sbti_approved = bool(dati_estratti.get("sbti_approved", False))
                         
-                        st.success("Dati estratti e auto-compilati con successo!")
+                        st.success("Estrazione Reale completata con successo!")
                         time.sleep(1)
                         st.rerun()
-                        
                     except Exception as e:
-                        st.error(f"Errore durante l'elaborazione: {e}")
+                        st.error(f"Errore: {e}")
     
     st.header("📡 2. API Finanziarie & Registri")
     ticker = st.text_input("Ticker Yahoo Finance (es. ENEL.MI o AAPL)")
     piva = st.text_input("Partita IVA (Per Registro EEA/ETS)")
     
-    # INTEGRAZIONE YFINANCE REALE
     if st.button("Sincronizza Database Pubblici"):
         with st.spinner("Connessione a YFinance, EEA e SBTi in corso..."):
             if not ticker:
                 st.warning("Inserisci prima un Ticker valido (es. ENEL.MI o AAPL).")
             else:
                 try:
-                    # 1. Creiamo una sessione che si finge un normale browser web (Google Chrome)
-                    session = requests.Session()
-                    session.headers.update({
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-                    })
-                    
-                    # 2. Passiamo la sessione mascherata a YFinance
-                    stock = yf.Ticker(ticker, session=session)
+                    # Lasciamo gestire la connessione nativa a yfinance
+                    stock = yf.Ticker(ticker)
                     
                     new_rev = None
                     new_ebitda = None
@@ -138,7 +136,7 @@ with st.sidebar:
                         new_rev = info.get('totalRevenue')
                         new_ebitda = info.get('ebitda')
                     
-                    # PIANO B: Se 'info' fallisce, andiamo sui financials
+                    # PIANO B: Se 'info' è vuoto, andiamo sui financials (Bilancio)
                     if new_rev is None:
                         fin = stock.financials
                         if not fin.empty:
@@ -147,7 +145,7 @@ with st.sidebar:
                             if 'EBITDA' in fin.index:
                                 new_ebitda = fin.loc['EBITDA'].iloc[0]
                                 
-                    # Aggiornamento dati
+                    # Aggiornamento dati a sistema se trovati
                     if new_rev:
                         st.session_state.revenue = int(new_rev)
                         if new_ebitda and not pd.isna(new_ebitda):
@@ -156,27 +154,29 @@ with st.sidebar:
                             st.session_state.opex = int(new_rev * 0.8)
                             
                         st.success(f"Dati estratti con successo per {ticker.upper()}!")
+                        if piva: st.session_state.sbti_approved = True
+                        time.sleep(1.5)
+                        st.rerun()
                     else:
-                        st.warning(f"Connesso a {ticker}, ma i dati sui ricavi non sono disponibili al momento.")
-
-                    if piva: 
-                        st.session_state.sbti_approved = True
-                    
-                    time.sleep(1.5)
-                    st.rerun()
+                        raise ValueError("Dati finanziari non esposti o bloccati.")
 
                 except Exception as e:
-                    st.error(f"Errore persistente o Ticker non valido. Dettaglio: {e}")
-                    
+                    # PIANO C (FALLBACK ANTICRASH): Yahoo blocca o fallisce, carichiamo dati verosimili
+                    st.warning(f"Yahoo Finance limitato. Attivo il Fallback (dati simulati per {ticker.upper()}).")
+                    st.session_state.revenue = 85_000_000
+                    st.session_state.opex = 60_000_000
+                    if piva: st.session_state.sbti_approved = True
+                    time.sleep(2.5)
+                    st.rerun()
+
     if st.session_state.sbti_approved:
         st.markdown("🎯 **Status:** `✅ Target SBTi Approvato`")
 
     st.divider()
     st.header("⚙️ 3. Dati Finanziari Asset")
     selected_country = st.selectbox("Posizione", df_base['Paese'].unique(), index=3) 
-    # Usiamo lo State per popolare automaticamente i campi in base a cosa estrae OpenAI o YFinance
     revenue = st.number_input("Ricavi Annuali (€/$/Valuta)", value=st.session_state.revenue, step=1_000_000)
-    opex = st.number_input("Costi Operativi (OpEx) (€/$/Valuta)", value=st.session_state.opex, step=1_000_000)
+    opex = st.number_input("Costi Operativi (OpEx)", value=st.session_state.opex, step=1_000_000)
     
     st.divider()
     st.header("🌫️ 4. Protocollo GHG")
@@ -206,8 +206,8 @@ color_map = {'Net Zero 2050 (Ordinata)': '#EF553B', 'Transizione Ritardata (Shoc
 st.title("🌍 CarbonRisk Enterprise AI")
 st.markdown("Piattaforma Istituzionale: API Satellitari, Supply Chain Mapping e Offsetting.")
 
-t_fin, t_tax, t_trans, t_supply, t_fisico, t_port, t_rep = st.tabs([
-    "💰 Finanza", "🇪🇺 Tassonomia", "🔄 Transizione & Offset", "🔗 Supply Chain", "🛰️ Copernicus GIS", "📊 Portafoglio", "📄 Report"
+t_fin, t_tax, t_trans, t_supply, t_fisico, t_port, t_rep, t_gov = st.tabs([
+    "💰 Finanza", "🇪🇺 Tassonomia", "🔄 Transizione & Offset", "🔗 Supply Chain", "🛰️ Copernicus GIS", "📊 Portafoglio", "📄 Report", "🌱 Governance & Visione"
 ])
 
 # --- TAB 1: FINANZA ---
@@ -295,12 +295,112 @@ with t_port:
     uploaded_file = st.file_uploader("Carica Excel Multi-Asset", type=["csv", "xlsx"])
     if uploaded_file: st.success("Dati caricati e arricchiti tramite API di mercato!")
 
-# --- TAB 7: REPORT ---
+# --- TAB 7: REPORT DINAMICO ---
 with t_rep:
-    st.header("Generatore PDF con AI Insights")
-    if st.button("🪄 Genera PDF TCFD/CSRD"):
+    st.header("Generatore PDF Dinamico con AI Insights")
+    st.markdown("Questo strumento genera un report esportabile **popolato con i dati attualmente presenti nella simulazione**.")
+    
+    if st.button("🪄 Genera Report CSRD / TCFD in PDF"):
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Arial", 'B', 16)
-        pdf.cell(200, 10, txt="Enterprise Climate Risk Report", ln=True, align='C')
-        st.download_button("📥 Scarica Report Completo", data=bytes(pdf.output()), file_name="Report.pdf", mime="application/pdf")
+        
+        pdf.set_font("Arial", 'B', 18)
+        pdf.cell(200, 15, txt="Enterprise Climate Risk & ESG Report", ln=True, align='C')
+        pdf.ln(10)
+        
+        pdf.set_font("Arial", 'B', 14)
+        pdf.cell(200, 10, txt="1. Panoramica Finanziaria", ln=True)
+        pdf.set_font("Arial", '', 12)
+        pdf.cell(200, 8, txt=f"Ricavi Totali: {st.session_state.revenue:,.0f} Valuta Locale", ln=True)
+        pdf.cell(200, 8, txt=f"Costi Operativi (OpEx): {st.session_state.opex:,.0f} Valuta Locale", ln=True)
+        pdf.ln(5)
+        
+        pdf.set_font("Arial", 'B', 14)
+        pdf.cell(200, 10, txt="2. Impronta Carbonica (GHG Protocol)", ln=True)
+        pdf.set_font("Arial", '', 12)
+        pdf.cell(200, 8, txt=f"- Scope 1 (Emissioni Dirette): {st.session_state.scope1:,} tCO2", ln=True)
+        pdf.cell(200, 8, txt=f"- Scope 2 (Energia Acquistata): {st.session_state.scope2:,} tCO2", ln=True)
+        pdf.cell(200, 8, txt=f"- Scope 3 (Catena del Valore): {st.session_state.scope3:,} tCO2", ln=True)
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(200, 10, txt=f"TOTALE IMPRONTA LORDA: {emissions_tot:,} tCO2", ln=True)
+        pdf.ln(5)
+        
+        stato_sbti = "APPROVATO" if st.session_state.sbti_approved else "Non Rilevato/Non Approvato"
+        pdf.set_font("Arial", 'B', 14)
+        pdf.cell(200, 10, txt="3. Strategia di Transizione e Governance", ln=True)
+        pdf.set_font("Arial", '', 12)
+        pdf.cell(200, 8, txt=f"Status Science Based Targets (SBTi): {stato_sbti}", ln=True)
+        pdf.cell(200, 8, txt=f"Emissioni residue stimate post-intervento: {st.session_state.em_final:,} tCO2", ln=True)
+        
+        pdf_bytes = pdf.output(dest='S').encode('latin-1')
+        
+        st.success("Report generato con successo sui dati attuali!")
+        st.download_button(
+            label="📥 Scarica Report Completo (.PDF)", 
+            data=pdf_bytes, 
+            file_name="ESG_Climate_Report.pdf", 
+            mime="application/pdf"
+        )
+
+# --- TAB 8: GOVERNANCE & VISIONE STRATEGICA ---
+with t_gov:
+    st.header("🌱 AI per la Governance del Rischio Climatico e della Biodiversità")
+    st.markdown("**Ambito Principale:** Governance | **Connessioni Trasversali:** Clima, Innovazione")
+    
+    st.divider()
+    
+    col_vis, col_sfi = st.columns(2)
+    with col_vis:
+        st.subheader("🎯 Visione 2035")
+        st.write("""
+        Nel 2035, i consigli di amministrazione delle imprese europee assumono decisioni strategiche basate su una comprensione profonda e scientificamente fondata degli impatti ambientali. 
+        La dicotomia tra rendicontazione finanziaria e non finanziaria è scomparsa. La gestione del rischio climatico e la protezione della biodiversità sono integrate in tempo reale nei sistemi operativi aziendali, permettendo di anticipare le crisi ecologiche e di allocare i capitali verso soluzioni "nature-positive" che rigenerano gli ecosistemi.
+        """)
+        
+    with col_sfi:
+        st.subheader("⚠️ Sfida Attuale")
+        st.write("""
+        Le aziende operano in un ambiente di crescente complessità normativa, dominato dalla Direttiva sul reporting di sostenibilità aziendale (CSRD) e dalla Tassonomia Europea, che richiedono un livello di precisione nei dati precedentemente riservato alla sola contabilità finanziaria. 
+        Attualmente, la maggior parte delle organizzazioni, in particolare le PMI, manca degli strumenti per mappare i propri rischi fisici (es. eventi meteorologici) e di transizione, nonché per valutare in modo scientifico l'impatto delle proprie operazioni sulla biodiversità, rendendo i bilanci di sostenibilità vulnerabili al rischio di greenwashing.
+        """)
+
+    st.divider()
+    
+    st.subheader("💡 Proposta di Soluzione ESG")
+    st.write("""
+    Implementazione di una piattaforma aziendale centralizzata di **"Climate Risk & Biodiversity Assessment"**, integrata con gli strumenti di Business Intelligence e analisi dei dati. 
+    Basandosi sull'approccio di consulenza integrata che unisce ingegneria ambientale (Life Cycle Assessment) ed expertise societaria-legale, il software utilizzerà algoritmi di machine learning per elaborare dati geospaziali e climatici. 
+    Questo strumento permetterà di eseguire stress test sulle catene di fornitura, valutare la vulnerabilità degli asset fisici e quantificare l'impatto sulla biodiversità locale, fornendo dashboard direzionali chiare per l'alta dirigenza.
+    """)
+    
+    st.subheader("⚙️ Azioni Chiave e Stakeholder Coinvolti")
+    st.write("""
+    Il progetto prevede audit ambientali approfonditi sui siti produttivi, la creazione di **"Digital Twins"** delle supply chain per la simulazione degli scenari di rischio climatico e l'implementazione di rigorosi protocolli di sicurezza informatica per la protezione dei dati strategici. 
+    L'impresa lavorerà a stretto contatto con istituzioni accademiche per validare i modelli predittivi e ingaggerà compagnie assicurative e fondi di investimento per dimostrare la solidità della propria governance del rischio, ottenendo condizioni finanziarie di vantaggio.
+    """)
+    
+    st.divider()
+    
+    st.subheader("📊 KPI e Metriche di Impatto")
+    kpi_data = {
+        "Categoria": ["Ambientale", "Sociale", "Economico"],
+        "Indicatore di Misurazione (Target 2035)": [
+            "Punteggio di allineamento delle attività economiche ai criteri della Tassonomia Europea; Superficie di ecosistemi protetti o ripristinati in adiacenza agli asset produttivi.",
+            "Grado di integrazione dei principi ESG nelle politiche di remunerazione del top management; Ore di formazione erogate al consiglio di amministrazione sui temi dell'etica d'impresa.",
+            "Riduzione dei premi assicurativi grazie alla dimostrata mitigazione del rischio fisico; Incremento del rating ESG aziendale attribuito dalle principali agenzie internazionali."
+        ]
+    }
+    st.table(pd.DataFrame(kpi_data))
+    
+    st.subheader("👥 Ruolo del Team e Competenze")
+    team_data = {
+        "Ruolo nel Team": ["ESG Data & Analytics Manager", "Corporate Strategy & Governance Lead", "Environmental Risk Assessor"],
+        "Competenze Necessarie per l'Attuazione": [
+            "Competenze avanzate in architettura dei dati, business intelligence e implementazione di software ESG per la centralizzazione dei flussi informativi.",
+            "Esperienza in diritto societario e consulenza aziendale per tradurre i risultati analitici in policy interne e report di sostenibilità conformi (CSRD).",
+            "Capacità scientifiche per valutare l'impatto industriale sui servizi ecosistemici e progettare strategie di mitigazione basate su soluzioni naturali (Nature-Based Solutions)."
+        ]
+    }
+    st.table(pd.DataFrame(team_data))
+    
+    st.info("🌍 **Messaggio Finale:** *Proteggere il capitale naturale significa blindare il capitale aziendale: la vera governance del futuro calcola l'incalcolabile per governare l'imprevedibile.*")
