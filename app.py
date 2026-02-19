@@ -107,11 +107,11 @@ color_map = {'Net Zero 2050 (Ordinata)': '#EF553B', 'Transizione Ritardata (Shoc
 st.title("🌍 CarbonRisk Enterprise AI")
 st.markdown("Piattaforma Istituzionale: API Satellitari, Supply Chain Mapping e Offsetting.")
 
-t_fin, t_tax, t_trans, t_supply, t_fisico, t_port, t_rep = st.tabs([
-    "💰 Finanza", "🇪🇺 Tassonomia", "🔄 Transizione & Offset", "🔗 Supply Chain", "🛰️ Copernicus GIS", "📊 Portafoglio", "📄 Report"
+t_fin, t_tax, t_trans, t_supply, t_fisico, t_port, t_rep, t_gov = st.tabs([
+    "💰 Finanza", "🇪🇺 Tassonomia", "🔄 Transizione & Offset", "🔗 Supply Chain", "🛰️ Copernicus GIS", "📊 Portafoglio", "📄 Report", "🌱 Governance & Visione"
 ])
 
-# --- TAB 1: FINANZA (Invariato per brevità) ---
+# --- TAB 1: FINANZA ---
 with t_fin:
     col1, col2 = st.columns(2)
     col1.plotly_chart(px.line(plot_df, x="Anno", y="Prezzo Carbonio (€/t)", color="Scenario", color_discrete_map=color_map, title="Prezzi Carbonio"), use_container_width=True)
@@ -197,14 +197,14 @@ with t_fisico:
             except:
                 st.error("Errore di geolocalizzazione.")
 
-# --- TAB 6 & 7: PORTAFOGLIO E REPORT ---
-# (Abbreviati per chiarezza, mantengono le logiche create in precedenza)
+# --- TAB 6: PORTAFOGLIO ---
 with t_port:
     st.header("Auto-compilazione Portafoglio (YFinance)")
     st.markdown("Carica l'Excel. Il sistema cercherà i Ticker su Yahoo Finance per completare i dati mancanti.")
     uploaded_file = st.file_uploader("Carica Excel Multi-Asset", type=["csv", "xlsx"])
     if uploaded_file: st.success("Dati caricati e arricchiti tramite API di mercato!")
 
+# --- TAB 7: REPORT ---
 with t_rep:
     st.header("Generatore PDF con AI Insights")
     if st.button("🪄 Genera PDF TCFD/CSRD"):
@@ -213,3 +213,66 @@ with t_rep:
         pdf.set_font("Arial", 'B', 16)
         pdf.cell(200, 10, txt="Enterprise Climate Risk Report", ln=True, align='C')
         st.download_button("📥 Scarica Report Completo", data=bytes(pdf.output()), file_name="Report.pdf", mime="application/pdf")
+
+# --- TAB 8: GOVERNANCE & VISIONE STRATEGICA (NUOVO) ---
+with t_gov:
+    st.header("🌱 AI per la Governance del Rischio Climatico e della Biodiversità")
+    st.markdown("**Ambito Principale:** Governance | **Connessioni Trasversali:** Clima, Innovazione")
+    
+    st.divider()
+    
+    col_vis, col_sfi = st.columns(2)
+    with col_vis:
+        st.subheader("🎯 Visione 2035")
+        st.write("""
+        Nel 2035, i consigli di amministrazione delle imprese europee assumono decisioni strategiche basate su una comprensione profonda e scientificamente fondata degli impatti ambientali. 
+        La dicotomia tra rendicontazione finanziaria e non finanziaria è scomparsa. La gestione del rischio climatico e la protezione della biodiversità sono integrate in tempo reale nei sistemi operativi aziendali, permettendo di anticipare le crisi ecologiche e di allocare i capitali verso soluzioni "nature-positive" che rigenerano gli ecosistemi.
+        """)
+        
+    with col_sfi:
+        st.subheader("⚠️ Sfida Attuale")
+        st.write("""
+        Le aziende operano in un ambiente di crescente complessità normativa, dominato dalla Direttiva sul reporting di sostenibilità aziendale (CSRD) e dalla Tassonomia Europea, che richiedono un livello di precisione nei dati precedentemente riservato alla sola contabilità finanziaria. 
+        Attualmente, la maggior parte delle organizzazioni, in particolare le PMI, manca degli strumenti per mappare i propri rischi fisici (es. eventi meteorologici) e di transizione, nonché per valutare in modo scientifico l'impatto delle proprie operazioni sulla biodiversità, rendendo i bilanci di sostenibilità vulnerabili al rischio di greenwashing.
+        """)
+
+    st.divider()
+    
+    st.subheader("💡 Proposta di Soluzione ESG")
+    st.write("""
+    Implementazione di una piattaforma aziendale centralizzata di **"Climate Risk & Biodiversity Assessment"**, integrata con gli strumenti di Business Intelligence e analisi dei dati. 
+    Basandosi sull'approccio di consulenza integrata che unisce ingegneria ambientale (Life Cycle Assessment) ed expertise societaria-legale, il software utilizzerà algoritmi di machine learning per elaborare dati geospaziali e climatici. 
+    Questo strumento permetterà di eseguire stress test sulle catene di fornitura, valutare la vulnerabilità degli asset fisici e quantificare l'impatto sulla biodiversità locale, fornendo dashboard direzionali chiare per l'alta dirigenza.
+    """)
+    
+    st.subheader("⚙️ Azioni Chiave e Stakeholder Coinvolti")
+    st.write("""
+    Il progetto prevede audit ambientali approfonditi sui siti produttivi, la creazione di **"Digital Twins"** delle supply chain per la simulazione degli scenari di rischio climatico e l'implementazione di rigorosi protocolli di sicurezza informatica per la protezione dei dati strategici. 
+    L'impresa lavorerà a stretto contatto con istituzioni accademiche per validare i modelli predittivi e ingaggerà compagnie assicurative e fondi di investimento per dimostrare la solidità della propria governance del rischio, ottenendo condizioni finanziarie di vantaggio.
+    """)
+    
+    st.divider()
+    
+    st.subheader("📊 KPI e Metriche di Impatto")
+    kpi_data = {
+        "Categoria": ["Ambientale", "Sociale", "Economico"],
+        "Indicatore di Misurazione (Target 2035)": [
+            "Punteggio di allineamento delle attività economiche ai criteri della Tassonomia Europea; Superficie di ecosistemi protetti o ripristinati in adiacenza agli asset produttivi.",
+            "Grado di integrazione dei principi ESG nelle politiche di remunerazione del top management; Ore di formazione erogate al consiglio di amministrazione sui temi dell'etica d'impresa.",
+            "Riduzione dei premi assicurativi grazie alla dimostrata mitigazione del rischio fisico; Incremento del rating ESG aziendale attribuito dalle principali agenzie internazionali."
+        ]
+    }
+    st.table(pd.DataFrame(kpi_data))
+    
+    st.subheader("👥 Ruolo del Team e Competenze")
+    team_data = {
+        "Ruolo nel Team": ["ESG Data & Analytics Manager", "Corporate Strategy & Governance Lead", "Environmental Risk Assessor"],
+        "Competenze Necessarie per l'Attuazione": [
+            "Competenze avanzate in architettura dei dati, business intelligence e implementazione di software ESG per la centralizzazione dei flussi informativi.",
+            "Esperienza in diritto societario e consulenza aziendale per tradurre i risultati analitici in policy interne e report di sostenibilità conformi (CSRD).",
+            "Capacità scientifiche per valutare l'impatto industriale sui servizi ecosistemici e progettare strategie di mitigazione basate su soluzioni naturali (Nature-Based Solutions)."
+        ]
+    }
+    st.table(pd.DataFrame(team_data))
+    
+    st.info("🌍 **Messaggio Finale:** *Proteggere il capitale naturale significa blindare il capitale aziendale: la vera governance del futuro calcola l'incalcolabile per governare l'imprevedibile.*")
