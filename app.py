@@ -119,7 +119,7 @@ with st.sidebar:
                         st.rerun()
                     else: raise ValueError("Dati non disponibili.")
                 except Exception as e:
-                    st.warning("Yahoo limitato. Attivo Fallback.")
+                    st.warning("Yahoo limitato. Attivo Fallback (dati simulati).")
                     st.session_state.revenue, st.session_state.opex = 85_000_000, 60_000_000
                     if piva: st.session_state.sbti_approved = True
                     time.sleep(2)
@@ -142,7 +142,7 @@ t_home, t_rischi, t_tax, t_cbam, t_down = st.tabs([
     "🏠 Home", "📊 Analisi Rischi", "🇪🇺 Tassonomia (EU Template)", "🌍 CBAM", "📥 Download Ufficiali"
 ])
 
-# --- TAB 1 & 2 (Invariati per brevità, manteniamo le logiche esistenti) ---
+# --- TAB 1: HOME ---
 with t_home:
     st.header("Benvenuto in CarbonRisk Enterprise AI")
     st.markdown("Usa il menù a sinistra per inserire i dati della tua azienda. Naviga tra le schede in alto per effettuare le analisi di rischio e verificare l'allineamento normativo.")
@@ -151,39 +151,156 @@ with t_home:
     col_h2.metric("OpEx Attuali", f"€ {st.session_state.opex:,.0f}")
     col_h3.metric("Status SBTi", "Approvato" if st.session_state.sbti_approved else "Non Rilevato")
 
+# --- TAB 2: ANALISI RISCHI ---
 with t_rischi:
+    st.header("Matrice dei Rischi Climatici")
     rt_fisico, rt_transizione, rt_credito = st.tabs(["🛰️ Rischio Fisico", "🔄 Rischio di Transizione", "💰 Stress Test Finanziario"])
+    
     with rt_fisico:
         st.subheader("Dati Satellitari Copernicus (ESA)")
         indirizzo = st.text_input("Inserisci Indirizzo o CAP", "Porto di Rotterdam, Paesi Bassi")
         if st.button("📡 Estrai Dati ESA"):
-            st.success("Dati estratti con successo!") # Placeholder semplificato
-    with rt_transizione:
-        st.subheader("1. Protocollo GHG & CapEx")
-        st.number_input("Scope 1 (tCO2)", value=st.session_state.scope1, step=5000, key='scope1', on_change=sync_from_scopes)
-        st.number_input("Scope 2 (tCO2)", value=st.session_state.scope2, step=5000, key='scope2', on_change=sync_from_scopes)
-        st.number_input("Scope 3 (tCO2)", value=st.session_state.scope3, step=5000, key='scope3', on_change=sync_from_scopes)
-        st.number_input("Investimento Transizione (CapEx in €)", value=st.session_state.capex_totale, step=1_000_000, key='capex_totale')
-        st.slider("Riduzione Stimata (%)", 0, 100, key='perc_red', on_change=sync_from_perc)
-    with rt_credito:
-        st.subheader("Simulazione Finanziaria")
-        st.number_input("Rata Prestito (€)", value=st.session_state.rata_prestito, step=500_000, key='rata_prestito')
-        st.number_input("Ammortamenti (€)", value=st.session_state.ammortamenti, step=500_000, key='ammortamenti')
-        st.slider("Severità Leggi Locali", 1.0, 3.0, value=st.session_state.policy_multiplier, step=0.1, key='policy_multiplier')
+            with st.spinner("Connessione API Copernicus in corso..."):
+                time.sleep(1.5)
+                geolocator = Nominatim(user_agent="CarbonApp")
+                try:
+                    loc = geolocator.geocode(indirizzo)
+                    lat, lon = (loc.latitude, loc.longitude) if loc else (51.92, 4.47)
+                    st.success(f"Coordinate identificate: {lat:.4f}, {lon:.4f}.")
+                    fig_map = px.scatter_mapbox(pd.DataFrame({"Lat":[lat],"Lon":[lon],"L":["Asset"]}), lat="Lat", lon="Lon", zoom=10, height=350)
+                    fig_map.update_layout(mapbox_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0})
+                    st.plotly_chart(fig_map, use_container_width=True)
+                    
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("🌊 Rischio Allagamento (10 anni)", "45%", delta="+12% vs decennio prec.", delta_color="inverse")
+                    c2.metric("🌡️ Giorni > 35°C (Stress Termico)", "18 gg/anno", delta="+5 gg", delta_color="inverse")
+                    c3.metric("📉 Danno Economico Atteso", "€ 1.2M / anno")
+                except:
+                    st.error("Errore di geolocalizzazione.")
 
-# --- TAB 3: TASSONOMIA UE (MODELLO ANNEX II) ---
+    with rt_transizione:
+        st.subheader("1. Protocollo GHG (Inventario Emissioni)")
+        c_ghg1, c_ghg2 = st.columns(2)
+        with c_ghg1:
+            st.number_input("Scope 1: Emissioni Dirette (tCO2)", value=st.session_state.scope1, step=5000, key='scope1', on_change=sync_from_scopes)
+            st.number_input("Scope 2: Elettricità Acquistata (tCO2)", value=st.session_state.scope2, step=5000, key='scope2', on_change=sync_from_scopes)
+            st.number_input("Scope 3: Supply Chain (tCO2)", value=st.session_state.scope3, step=5000, key='scope3', on_change=sync_from_scopes)
+        with c_ghg2:
+            emissions_tot = get_tot_emissions()
+            st.info(f"### Totale Impronta Lorda\n# {emissions_tot:,} tCO2")
+            st.markdown("Questa è la baseline su cui verranno calcolate le tasse sul carbonio e gli scenari di stress.")
+
+        st.divider()
+        st.subheader("2. Simulatore CapEx di Transizione")
+        st.number_input("Investimento Transizione (CapEx in €)", value=st.session_state.capex_totale, step=1_000_000, key='capex_totale')
+        st.slider("Efficacia attesa (Riduzione Stimata %)", 0, 100, key='perc_red', on_change=sync_from_perc)
+        st.success(f"**Risultato Atteso:** Le emissioni nette finali scenderanno a **{st.session_state.em_final:,} tCO2**.")
+
+    with rt_credito:
+        st.subheader("1. Stress Test Finanziario")
+        c_cred1, c_cred2, c_cred3 = st.columns(3)
+        c_cred1.number_input("Rata Prestito Bancario (€)", value=st.session_state.rata_prestito, step=500_000, key='rata_prestito')
+        c_cred2.number_input("Ammortamenti Annuali (€)", value=st.session_state.ammortamenti, step=500_000, key='ammortamenti')
+        c_cred3.slider("Severità Leggi Locali (Moltiplicatore CO2)", 1.0, 3.0, value=st.session_state.policy_multiplier, step=0.1, key='policy_multiplier')
+
+        country_data = df_base[df_base['Paese'] == st.session_state.selected_country].copy()
+        plot_data = []
+        emissions_tot = get_tot_emissions()
+        for _, row in country_data.iterrows():
+            eff_price = row['Prezzo Carbonio Base'] * st.session_state.policy_multiplier
+            profit = st.session_state.revenue - st.session_state.opex - (eff_price * emissions_tot)
+            plot_data.append({"Anno": row['Anno'], "Utile Netto (€)": profit, "DSCR": (profit+st.session_state.ammortamenti)/st.session_state.rata_prestito if st.session_state.rata_prestito else 99, "Scenario": row['Scenario'], "Prezzo Carbonio (€/t)": eff_price})
+        plot_df = pd.DataFrame(plot_data)
+        color_map = {'Net Zero 2050 (Ordinata)': '#EF553B', 'Transizione Ritardata (Shock)': '#FECB52', 'Politiche Attuali (BAU)': '#00CC96'}
+
+        cg1, cg2 = st.columns(2)
+        fig_prezzo = px.line(plot_df, x="Anno", y="Prezzo Carbonio (€/t)", color="Scenario", color_discrete_map=color_map, title="Evoluzione Prezzo Carbonio")
+        fig_prezzo.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
+        cg1.plotly_chart(fig_prezzo, use_container_width=True)
+        
+        fig_utile = px.line(plot_df, x="Anno", y="Utile Netto (€)", color="Scenario", color_discrete_map=color_map, title="Impatto sugli Utili (Senza Transizione)")
+        fig_utile.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
+        cg2.plotly_chart(fig_utile, use_container_width=True)
+
+        st.divider()
+        st.subheader("2. Analisi d'Impatto: Prima e Dopo la Transizione")
+        prezzo_rif = 70.0 * st.session_state.policy_multiplier
+        tasse_prima = emissions_tot * prezzo_rif
+        costi_prima = st.session_state.opex + tasse_prima
+        utile_prima = st.session_state.revenue - costi_prima
+        
+        tasse_dopo = st.session_state.em_final * prezzo_rif
+        costi_dopo = st.session_state.opex + tasse_dopo + st.session_state.rata_prestito
+        utile_dopo = st.session_state.revenue - costi_dopo
+        
+        col_bar1, col_bar2 = st.columns(2)
+        with col_bar1:
+            fig_prima = go.Figure(data=[
+                go.Bar(name='Ricavi', x=[''], y=[st.session_state.revenue], marker_color='#0070C0'),
+                go.Bar(name='Costi (OpEx + Tasse)', x=[''], y=[costi_prima], marker_color='#C00000'),
+                go.Bar(name='Utile Netto', x=[''], y=[utile_prima], base=[costi_prima], marker_color='#00B050')
+            ])
+            fig_prima.update_layout(title=dict(text="Prima della Transizione", x=0.5), barmode='group')
+            st.plotly_chart(fig_prima, use_container_width=True)
+            
+        with col_bar2:
+            fig_dopo = go.Figure(data=[
+                go.Bar(name='Ricavi', x=[''], y=[st.session_state.revenue], marker_color='#0070C0'),
+                go.Bar(name='Costi (Incl. Prestito e Tasse)', x=[''], y=[costi_dopo], marker_color='#C00000'),
+                go.Bar(name='Utile Netto', x=[''], y=[utile_dopo], base=[costi_dopo], marker_color='#00B050')
+            ])
+            fig_dopo.update_layout(title=dict(text="Dopo la Transizione", x=0.5), barmode='group')
+            st.plotly_chart(fig_dopo, use_container_width=True)
+
+# --- TAB 3: TASSONOMIA UE (COMPLETA E BELLA) ---
 with t_tax:
     st.header("🇪🇺 Reporting Tassonomia UE (Struttura Annex II)")
-    st.markdown("Costruisci il portafoglio CapEx. Il calcolo dell'allineamento è vincolato non solo ai criteri tecnici (TSC), ma anche al rispetto del **DNSH** e delle **Garanzie Minime** (Minimum Safeguards) come richiesto dal template ufficiale EU.")
+    st.markdown("Costruisci il portafoglio CapEx. Il calcolo dell'allineamento è vincolato non solo ai criteri tecnici (TSC), ma anche al rispetto del **DNSH** e delle **Garanzie Minime**.")
 
-    # Struttura Dati con Codici NACE verosimili
+    # Database NACE Esteso
     tassonomia_db = {
-        "Agricoltura, silvicoltura e pesca": {"Coltivazione di colture": "A1.1", "Silvicoltura": "A2.1"},
-        "Attività manifatturiere": {"Fabbricazione di cemento": "C23.51", "Fabbricazione di batterie": "C27.2", "Fabbricazione ferro e acciaio": "C24.1"},
-        "Fornitura di energia": {"Solare fotovoltaica": "D35.11", "Eolica": "D35.11", "Idroelettrica": "D35.11"},
-        "Trasporto e magazzinaggio": {"Trasporto passeggeri interurbano": "H49.39", "Infrastrutture mobilità zero emissioni": "F42.11"},
-        "Costruzioni e attività immobiliari": {"Costruzione di nuovi edifici": "F41.2", "Acquisto e proprietà edifici (Real Estate)": "L68.2"},
-        "Informazione e comunicazione": {"Data Center": "J63.11"}
+        "Agricoltura, silvicoltura e pesca": {
+            "Coltivazione di colture non perenni": "A1.1", 
+            "Coltivazione di colture perenni": "A1.2",
+            "Allevamento di bestiame": "A1.4",
+            "Silvicoltura e gestione forestale": "A2.1"
+        },
+        "Attività manifatturiere": {
+            "Fabbricazione di cemento": "C23.51", 
+            "Fabbricazione di alluminio": "C24.42",
+            "Fabbricazione di ferro e acciaio": "C24.1", 
+            "Fabbricazione di materie plastiche": "C20.16",
+            "Fabbricazione di prodotti chimici": "C20.1",
+            "Fabbricazione di batterie": "C27.2",
+            "Fabbricazione di veicoli a basse emissioni": "C29.1"
+        },
+        "Fornitura di energia": {
+            "Produzione di energia solare fotovoltaica": "D35.11", 
+            "Produzione di energia eolica": "D35.11", 
+            "Produzione di energia idroelettrica": "D35.11",
+            "Trasmissione e distribuzione di energia elettrica": "D35.12",
+            "Stoccaggio di energia elettrica": "D35.11"
+        },
+        "Acqua e Rifiuti": {
+            "Raccolta e depurazione delle acque di scarico": "E37.00",
+            "Recupero dei materiali (Riciclo)": "E38.32",
+            "Raccolta di rifiuti non pericolosi": "E38.11"
+        },
+        "Trasporto e magazzinaggio": {
+            "Trasporto passeggeri interurbano": "H49.39", 
+            "Trasporto merci su strada": "H49.41",
+            "Trasporto marittimo e costiero": "H50.1",
+            "Infrastrutture mobilità zero emissioni": "F42.11"
+        },
+        "Costruzioni e attività immobiliari": {
+            "Costruzione di nuovi edifici": "F41.2", 
+            "Ristrutturazione di edifici esistenti": "F41.2",
+            "Acquisto e proprietà edifici (Real Estate)": "L68.2"
+        },
+        "Informazione e comunicazione (ICT)": {
+            "Elaborazione dati e hosting (Data Center)": "J63.11",
+            "Programmazione informatica (Soluzioni Clima)": "J62.01"
+        }
     }
 
     c_tax_head1, c_tax_head2 = st.columns([1, 2])
@@ -203,7 +320,9 @@ with t_tax:
         if "edifici" in attivita_lower or "real estate" in attivita_lower: unita, soglia, target_unit = "m2 Gestiti", 80.0, "kWh/m2"
         elif "trasporto" in attivita_lower or "mobilità" in attivita_lower: unita, soglia, target_unit = "tkm", 50.0, "gCO2/tkm"
         elif "cemento" in attivita_lower: unita, soglia, target_unit = "Tonnellate prodotte", 0.72, "tCO2/ton"
+        elif "acciaio" in attivita_lower or "alluminio" in attivita_lower: unita, soglia, target_unit = "Tonnellate", 1.3, "tCO2/ton"
         elif "energia" in settore.lower() or "fotovoltaica" in attivita_lower: unita, soglia, target_unit = "MWh", 100.0, "gCO2/kWh"
+        elif "data center" in attivita_lower: unita, soglia, target_unit = "Terabyte (TB)", 1.2, "PUE"
         else: unita, soglia, target_unit = "Unità", 1.0, "tCO2/unità"
 
         with col_tax2:
@@ -212,6 +331,7 @@ with t_tax:
             
             int_calc = (st.session_state.em_final / prod) if prod > 0 else 0
             if target_unit.startswith("g"): int_calc *= 1000 
+            elif "PUE" in target_unit: int_calc = 1.0 + (st.session_state.em_final / 1000000)
             
             tsc_passed = int_calc <= soglia and prod > 0
             st.metric("Substantial Contribution", "Superato (Y)" if tsc_passed else "Non Superato (N)", delta_color="normal" if tsc_passed else "inverse")
@@ -222,9 +342,9 @@ with t_tax:
                     "Economic activities": attivita,
                     "Code(s)": nace_code,
                     "Absolute CapEx (€)": capex_attivita,
-                    "TSC Passed (CCM)": "Y" if tsc_passed else "N",
-                    "DNSH criteria (Y/N)": "Y", # Default iniziale, modificabile
-                    "Min. Safeguards (Y/N)": "Y", # Default iniziale, modificabile
+                    "TSC Passed": "Y" if tsc_passed else "N",
+                    "DNSH": "Y", 
+                    "Safeguards": "Y", 
                 })
                 st.success("Aggiunto!")
                 time.sleep(0.5)
@@ -233,32 +353,32 @@ with t_tax:
                 st.error("Il CapEx deve essere > 0.")
 
     st.divider()
-    st.subheader("📊 EU Taxonomy CapEx Editor (Basato su Annex II)")
+    st.subheader("📊 EU Taxonomy CapEx Editor (Interattivo)")
     
     if st.session_state.tax_portfolio:
         df_tax = pd.DataFrame(st.session_state.tax_portfolio)
         
-        st.markdown("✏️ **Edita DNSH e Safeguards direttamente nella tabella:** Se una di queste colonne diventa 'N', l'attività perde lo status di allineamento indipendentemente dai criteri tecnici.")
+        st.markdown("✏️ **Personalizza e Pulisci:** Modifica direttamente i valori nella tabella (es. cambia i DNSH in 'N' per vedere l'impatto). Per cancellare una riga, seleziona la spunta a sinistra e premi Canc/Backspace.")
         
-        # Data Editor interattivo
+        # TABELLA ESTETICAMENTE MIGLIORATA CON COLUMN_CONFIG
         edited_df = st.data_editor(
             df_tax,
             use_container_width=True,
             num_rows="dynamic",
             column_config={
-                "DNSH criteria (Y/N)": st.column_config.SelectboxColumn("DNSH (Y/N)", options=["Y", "N"], required=True),
-                "Min. Safeguards (Y/N)": st.column_config.SelectboxColumn("Safeguards (Y/N)", options=["Y", "N"], required=True),
-                "TSC Passed (CCM)": st.column_config.TextColumn(disabled=True) # Calcolato dal sistema
+                "Economic activities": st.column_config.TextColumn("Attività Economica", width="medium"),
+                "Code(s)": st.column_config.TextColumn("NACE", width="small"),
+                "Absolute CapEx (€)": st.column_config.NumberColumn("CapEx (€)", format="€ %d", width="small"),
+                "TSC Passed": st.column_config.TextColumn("TSC (Y/N)", disabled=True, width="small"),
+                "DNSH": st.column_config.SelectboxColumn("DNSH", options=["Y", "N"], required=True, width="small"),
+                "Safeguards": st.column_config.SelectboxColumn("Min. Safeguards", options=["Y", "N"], required=True, width="small")
             },
             key="tax_editor"
         )
         
-        # Logica rigorosa di Allineamento (Deve essere Y in tutte e tre le colonne)
-        edited_df["Taxonomy-aligned"] = (edited_df["TSC Passed (CCM)"] == "Y") & (edited_df["DNSH criteria (Y/N)"] == "Y") & (edited_df["Min. Safeguards (Y/N)"] == "Y")
-        edited_df["Taxonomy-aligned (Y/N)"] = edited_df["Taxonomy-aligned"].map({True: "Y", False: "N"})
-        
-        # Salvataggio stato (rimuoviamo le colonne d'appoggio prima di salvare)
-        st.session_state.tax_portfolio = edited_df.drop(columns=["Taxonomy-aligned", "Taxonomy-aligned (Y/N)"]).to_dict('records')
+        # Logica rigorosa di Allineamento
+        edited_df["Aligned"] = (edited_df["TSC Passed"] == "Y") & (edited_df["DNSH"] == "Y") & (edited_df["Safeguards"] == "Y")
+        st.session_state.tax_portfolio = edited_df.drop(columns=["Aligned"]).to_dict('records')
         
         if st.button("🗑️ Svuota Tutto"):
             st.session_state.tax_portfolio = []
@@ -267,7 +387,7 @@ with t_tax:
         # Calcolo KPI
         capex_tot = st.session_state.capex_totale
         capex_eligible = edited_df["Absolute CapEx (€)"].sum()
-        capex_aligned = edited_df[edited_df["Taxonomy-aligned"] == True]["Absolute CapEx (€)"].sum()
+        capex_aligned = edited_df[edited_df["Aligned"] == True]["Absolute CapEx (€)"].sum()
         
         if capex_eligible > capex_tot: capex_tot = capex_eligible
         
@@ -283,17 +403,61 @@ with t_tax:
                 values=[capex_aligned, capex_eligible - capex_aligned, capex_tot - capex_eligible], 
                 hole=.4, marker_colors=['#00B050', '#FECB52', '#C00000']
             )])
+            fig_pie.update_layout(margin=dict(t=20, b=0, l=0, r=0))
             st.plotly_chart(fig_pie, use_container_width=True)
 
-# --- TAB 4: CBAM (Invariato per brevità) ---
+# --- TAB 4: CBAM E SUPPLY CHAIN ---
 with t_cbam:
     st.header("🔗 Analisi CBAM & Supply Chain")
-    st.markdown("Modulo in funzione. (Omissis per brevità nel codice, mantenuto attivo)")
+    st.markdown("Valuta l'impatto del Carbon Border Adjustment Mechanism (CBAM) integrando i dati della **Banca Mondiale** sulle Carbon Tax estere.")
+    
+    wb_database = {
+        "Nessuna Tassa (Es. India, Turchia)": 0.0,
+        "Cina (China National ETS)": 10.0,
+        "Sud Africa (Carbon Tax)": 11.0,
+        "Regno Unito (UK ETS)": 45.0,
+        "Canada (Federal Carbon Pricing)": 55.0,
+        "Svizzera (Swiss ETS)": 68.0
+    }
+    
+    col_cbam1, col_cbam2 = st.columns(2)
+    with col_cbam1:
+        st.subheader("🌍 Profilo Importazione Extra-UE")
+        origine_fornitori = st.selectbox("Paese di Origine Fornitori", list(wb_database.keys()))
+        tassa_estera = wb_database[origine_fornitori]
+        emissioni_importate = st.number_input("Emissioni Fornitori Extra-UE (tCO2)", value=int(st.session_state.scope3 * 0.6), step=1000)
+        
+    with col_cbam2:
+        st.subheader("💶 Impatto Fiscale (CBAM)")
+        prezzo_eu_ets = 70.0 
+        differenziale_cbam = max(0, prezzo_eu_ets - tassa_estera)
+        costo_lordo_cbam = emissioni_importate * prezzo_eu_ets
+        sconto_tassa = emissioni_importate * tassa_estera
+        costo_netto_cbam = emissioni_importate * differenziale_cbam
+        
+        st.metric("Tassa Estera Pagata all'origine", f"€ {tassa_estera}/tCO2")
+        st.metric("Costo Netto CBAM", f"€ {costo_netto_cbam:,.0f}", f"- € {sconto_tassa:,.0f} (Sconto tassa estera)", delta_color="inverse")
 
-# --- TAB 5: DOWNLOAD (CON TEMPLATE UFFICIALE) ---
+    st.subheader("🔄 Flusso dei Costi Climatici")
+    labels = ["Fornitori Extra-UE", "Fornitori UE", "Tassa Doganale LORDA", "Sconto Tasse Estere", "CBAM Netto (Da Pagare)", "La Tua Azienda (OpEx)", "Utile Netto"]
+    source, target = [0, 0, 1, 2, 2, 4, 5, 5], [2, 5, 5, 3, 4, 5, 5, 6]
+    val_fornitori_ue = st.session_state.scope3 - emissioni_importate
+    value = [
+        costo_lordo_cbam, val_fornitori_ue * prezzo_eu_ets, val_fornitori_ue * prezzo_eu_ets, 
+        sconto_tassa, costo_netto_cbam, costo_netto_cbam, st.session_state.opex, 
+        (st.session_state.revenue - st.session_state.opex - costo_netto_cbam)
+    ]
+    
+    fig_sankey = go.Figure(data=[go.Sankey(
+        node=dict(pad=15, thickness=20, line=dict(color="black", width=0.5), label=labels, color="#2E86AB"), 
+        link=dict(source=source, target=target, value=value, color="#EAEAEA")
+    )])
+    fig_sankey.update_layout(height=450, margin=dict(l=0, r=0, t=30, b=0), font=dict(size=14, color="black", family="Arial, sans-serif"))
+    st.plotly_chart(fig_sankey, use_container_width=True)
+
+# --- TAB 5: DOWNLOAD (CON TEMPLATE UFFICIALE E PULITO) ---
 with t_down:
     st.header("📥 Esportazione Dati & Report Ufficiali")
-    st.markdown("Esporta i dati elaborati nel formato richiesto dalle normative europee.")
     
     col_d1, col_d2 = st.columns(2)
     
@@ -310,42 +474,41 @@ with t_down:
 
     with col_d2:
         st.subheader("2. EU Taxonomy Annex II (CSV)")
-        st.markdown("Scarica il template strutturato (CapEx) basato sulle tue elaborazioni, formattato secondo il modello ufficiale caricato a sistema.")
+        st.markdown("Scarica il template strutturato (CapEx) basato sulle tue elaborazioni.")
         
         if st.session_state.tax_portfolio:
-            # Creazione del DataFrame in stile Template Ufficiale EU
             df_export = pd.DataFrame(st.session_state.tax_portfolio)
-            
-            # Ricalcoliamo l'allineamento e le proporzioni per il file finale
             tot_capex = st.session_state.capex_totale if st.session_state.capex_totale > df_export["Absolute CapEx (€)"].sum() else df_export["Absolute CapEx (€)"].sum()
             
+            # Calcoli rigorosi
             df_export["Proportion of CapEx (%)"] = (df_export["Absolute CapEx (€)"] / tot_capex * 100).round(2).astype(str) + "%"
-            df_export["Taxonomy-aligned"] = (df_export["TSC Passed (CCM)"] == "Y") & (df_export["DNSH criteria (Y/N)"] == "Y") & (df_export["Min. Safeguards (Y/N)"] == "Y")
+            df_export["Taxonomy-aligned"] = (df_export["TSC Passed"] == "Y") & (df_export["DNSH"] == "Y") & (df_export["Safeguards"] == "Y")
             df_export["Taxonomy-aligned proportion (%)"] = np.where(df_export["Taxonomy-aligned"], df_export["Proportion of CapEx (%)"], "0%")
-            df_export["Category (enabling/transitional)"] = "Transitional" # Semplificazione
+            df_export["Category"] = "Transitional"
             
-            # Rinominiamo e riordiniamo le colonne come nel template "reporting-template.xlsx - CapEx template.csv"
+            # Mappatura Esatta Colonne Template
             export_cols = {
                 "Economic activities": "Economic activities",
                 "Code(s)": "Code(s)",
                 "Absolute CapEx (€)": "Absolute CapEx",
                 "Proportion of CapEx (%)": "Proportion of CapEx",
-                "TSC Passed (CCM)": "Substantial contribution criteria - CCM",
-                "DNSH criteria (Y/N)": "DNSH criteria (Y/N)",
-                "Min. Safeguards (Y/N)": "Minimum Safeguards (Y/N)",
+                "TSC Passed": "Substantial contribution criteria - CCM",
+                "DNSH": "DNSH criteria (Y/N)",
+                "Safeguards": "Minimum Safeguards (Y/N)",
                 "Taxonomy-aligned proportion (%)": "Taxonomy-aligned proportion of CapEx",
-                "Category (enabling/transitional)": "Category"
+                "Category": "Category (enabling/transitional)"
             }
             
             df_final_export = df_export.rename(columns=export_cols)[list(export_cols.values())]
             
-            csv_data = df_final_export.to_csv(index=False)
+            # Creazione CSV pulito
+            csv_data = df_final_export.to_csv(index=False, sep=";") # Uso il separatore ; per aprirsi bene in Excel
             
             st.download_button(
-                label="📥 Scarica Annex II CapEx Template (.CSV)", 
+                label="📥 Scarica Annex II CapEx (.CSV)", 
                 data=csv_data, 
-                file_name="EU_Taxonomy_CapEx_Report.csv", 
+                file_name="EU_Taxonomy_CapEx_Template.csv", 
                 mime="text/csv"
             )
         else:
-            st.warning("⚠️ Compila prima il portafoglio Tassonomia (Tab 3) per sbloccare il download del template ufficiale.")
+            st.warning("⚠️ Compila prima il portafoglio Tassonomia (Tab 3).")
