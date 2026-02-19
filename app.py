@@ -197,67 +197,64 @@ with t_rischi:
         st.success(f"**Risultato Atteso:** Le emissioni nette finali scenderanno a **{st.session_state.em_final:,} tCO2**.")
 
     with rt_credito:
-        st.subheader("1. Stress Test Finanziario")
+        st.subheader("1. Finanziamento & Evoluzione Carbonio")
         c_cred1, c_cred2, c_cred3 = st.columns(3)
         c_cred1.number_input("Rata Prestito Bancario (€)", value=st.session_state.rata_prestito, step=500_000, key='rata_prestito')
         c_cred2.number_input("Ammortamenti Annuali (€)", value=st.session_state.ammortamenti, step=500_000, key='ammortamenti')
         c_cred3.slider("Severità Leggi Locali (Moltiplicatore CO2)", 1.0, 3.0, value=st.session_state.policy_multiplier, step=0.1, key='policy_multiplier')
 
+        # Calcolo dinamico scenari IPCC (Prima vs Dopo)
         country_data = df_base[df_base['Paese'] == st.session_state.selected_country].copy()
         plot_data = []
         emissions_tot = get_tot_emissions()
         for _, row in country_data.iterrows():
             eff_price = row['Prezzo Carbonio Base'] * st.session_state.policy_multiplier
-            profit = st.session_state.revenue - st.session_state.opex - (eff_price * emissions_tot)
-            plot_data.append({"Anno": row['Anno'], "Utile Netto (€)": profit, "DSCR": (profit+st.session_state.ammortamenti)/st.session_state.rata_prestito if st.session_state.rata_prestito else 99, "Scenario": row['Scenario'], "Prezzo Carbonio (€/t)": eff_price})
+            # Profitto Scenario BAU (Senza CapEx, subisce tutte le tasse)
+            profit_prima = st.session_state.revenue - st.session_state.opex - (eff_price * emissions_tot)
+            # Profitto Scenario Transizione (CapEx speso, emissioni ridotte, ma si paga la rata del prestito)
+            profit_dopo = st.session_state.revenue - st.session_state.opex - (eff_price * st.session_state.em_final) - st.session_state.rata_prestito
+            plot_data.append({
+                "Anno": row['Anno'], 
+                "Utile Netto (€)": profit_prima, 
+                "Utile Netto Post-Transizione (€)": profit_dopo,
+                "Scenario": row['Scenario'], 
+                "Prezzo Carbonio (€/t)": eff_price
+            })
         plot_df = pd.DataFrame(plot_data)
         color_map = {'Net Zero 2050 (Ordinata)': '#EF553B', 'Transizione Ritardata (Shock)': '#FECB52', 'Politiche Attuali (BAU)': '#00CC96'}
 
-        cg1, cg2 = st.columns(2)
-        fig_prezzo = px.line(plot_df, x="Anno", y="Prezzo Carbonio (€/t)", color="Scenario", color_discrete_map=color_map, title="Evoluzione Prezzo Carbonio")
+        fig_prezzo = px.line(plot_df, x="Anno", y="Prezzo Carbonio (€/t)", color="Scenario", color_discrete_map=color_map, title="Evoluzione Prezzo Tasse Carbonio (€/t) nei tre Scenari IPCC")
         fig_prezzo.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
-        cg1.plotly_chart(fig_prezzo, use_container_width=True)
-        
-        fig_utile = px.line(plot_df, x="Anno", y="Utile Netto (€)", color="Scenario", color_discrete_map=color_map, title="Impatto sugli Utili (Senza Transizione)")
-        fig_utile.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
-        cg2.plotly_chart(fig_utile, use_container_width=True)
+        st.plotly_chart(fig_prezzo, use_container_width=True)
 
         st.divider()
-        st.subheader("2. Analisi d'Impatto: Prima e Dopo la Transizione")
-        prezzo_rif = 70.0 * st.session_state.policy_multiplier
-        tasse_prima = emissions_tot * prezzo_rif
-        costi_prima = st.session_state.opex + tasse_prima
-        utile_prima = st.session_state.revenue - costi_prima
+
+        st.subheader("2. Analisi d'Impatto: Utili Prima e Dopo la Transizione (Scenari IPCC)")
+        st.markdown("Metti a confronto gli scenari anno su anno per capire se il costo del prestito (CapEx) è giustificato dal risparmio fiscale futuro.")
+        col_lin1, col_lin2 = st.columns(2)
         
-        tasse_dopo = st.session_state.em_final * prezzo_rif
-        costi_dopo = st.session_state.opex + tasse_dopo + st.session_state.rata_prestito
-        utile_dopo = st.session_state.revenue - costi_dopo
-        
-        col_bar1, col_bar2 = st.columns(2)
-        with col_bar1:
-            fig_prima = go.Figure(data=[
-                go.Bar(name='Ricavi', x=[''], y=[st.session_state.revenue], marker_color='#0070C0'),
-                go.Bar(name='Costi (OpEx + Tasse)', x=[''], y=[costi_prima], marker_color='#C00000'),
-                go.Bar(name='Utile Netto', x=[''], y=[utile_prima], base=[costi_prima], marker_color='#00B050')
-            ])
-            fig_prima.update_layout(title=dict(text="Prima della Transizione", x=0.5), barmode='group')
+        with col_lin1:
+            fig_prima = px.line(plot_df, x="Anno", y="Utile Netto (€)", color="Scenario", color_discrete_map=color_map, title="PRIMA: Nessuna Transizione (Alta Esposizione Fiscale)")
+            fig_prima.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
             st.plotly_chart(fig_prima, use_container_width=True)
             
-        with col_bar2:
-            fig_dopo = go.Figure(data=[
-                go.Bar(name='Ricavi', x=[''], y=[st.session_state.revenue], marker_color='#0070C0'),
-                go.Bar(name='Costi (Incl. Prestito e Tasse)', x=[''], y=[costi_dopo], marker_color='#C00000'),
-                go.Bar(name='Utile Netto', x=[''], y=[utile_dopo], base=[costi_dopo], marker_color='#00B050')
-            ])
-            fig_dopo.update_layout(title=dict(text="Dopo la Transizione", x=0.5), barmode='group')
+        with col_lin2:
+            fig_dopo = px.line(plot_df, x="Anno", y="Utile Netto Post-Transizione (€)", color="Scenario", color_discrete_map=color_map, title="DOPO: Con Transizione (Basse Emissioni + Rata Prestito)")
+            fig_dopo.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
             st.plotly_chart(fig_dopo, use_container_width=True)
 
-# --- TAB 3: TASSONOMIA UE (COMPLETA E BELLA) ---
+        st.divider()
+        st.subheader("3. Carbon Offsetting (Crediti VERs per Net Zero)")
+        prezzo_ver = st.number_input("Prezzo Mercato Volontario (€/tCO2)", value=0)
+        costo_offsetting = st.session_state.em_final * prezzo_ver
+        st.metric("Costo Annuale per raggiungere neutralità climatica assoluta", f"€ {costo_offsetting:,.0f}")
+
+# --- TAB 3: TASSONOMIA UE (ESTESA A TUTTE LE ATTIVITÀ) ---
 with t_tax:
     st.header("🇪🇺 Reporting Tassonomia UE (Struttura Annex II)")
-    st.markdown("Costruisci il portafoglio CapEx. Il calcolo dell'allineamento è vincolato non solo ai criteri tecnici (TSC), ma anche al rispetto del **DNSH** e delle **Garanzie Minime**.")
+    st.markdown("Dichiara la totalità del tuo CapEx. Le attività non coperte dalla Tassonomia (es. Commercio, Finanza, Estrazione Fossile) verranno classificate in automatico come **Non Ammissibili (Non-Eligible)**.")
 
-    # Database NACE Esteso
+    # Database NACE Esteso a includere settori NON eligibili
     tassonomia_db = {
         "Agricoltura, silvicoltura e pesca": {
             "Coltivazione di colture non perenni": "A1.1", 
@@ -300,6 +297,27 @@ with t_tax:
         "Informazione e comunicazione (ICT)": {
             "Elaborazione dati e hosting (Data Center)": "J63.11",
             "Programmazione informatica (Soluzioni Clima)": "J62.01"
+        },
+        # --- SETTORI NON AMMISSIBILI ---
+        "Attività estrattive (Non Ammissibili)": {
+            "Estrazione di carbone": "B05",
+            "Estrazione di petrolio greggio e gas naturale": "B06",
+            "Altre attività estrattive": "B08"
+        },
+        "Commercio all'ingrosso e dettaglio (Non Ammissibili)": {
+            "Commercio di autoveicoli e motocicli": "G45",
+            "Commercio all'ingrosso": "G46",
+            "Commercio al dettaglio": "G47"
+        },
+        "Attività finanziarie e assicurative (Non Ammissibili)": {
+            "Intermediazione monetaria (Banche)": "K64",
+            "Assicurazioni e fondi pensione": "K65"
+        },
+        "Altre attività di servizi (Non Ammissibili)": {
+            "Servizi di ristorazione e alloggio": "I55-56",
+            "Attività professionali, scientifiche e tecniche": "M",
+            "Sanità e assistenza sociale": "Q",
+            "Altre attività non classificate o generali": "N/A"
         }
     }
 
@@ -315,9 +333,13 @@ with t_tax:
             nace_code = tassonomia_db[settore][attivita]
             capex_attivita = st.number_input("Absolute CapEx (€)", min_value=0, value=0, step=100000)
 
-        # Logica per unità e soglie
+        # Logica di Ammissibilità ed Emissioni
+        is_eligible = "Non Ammissibili" not in settore
+        
         attivita_lower = attivita.lower()
-        if "edifici" in attivita_lower or "real estate" in attivita_lower: unita, soglia, target_unit = "m2 Gestiti", 80.0, "kWh/m2"
+        if not is_eligible:
+            unita, soglia, target_unit = "N/A", 0, "N/A"
+        elif "edifici" in attivita_lower or "real estate" in attivita_lower: unita, soglia, target_unit = "m2 Gestiti", 80.0, "kWh/m2"
         elif "trasporto" in attivita_lower or "mobilità" in attivita_lower: unita, soglia, target_unit = "tkm", 50.0, "gCO2/tkm"
         elif "cemento" in attivita_lower: unita, soglia, target_unit = "Tonnellate prodotte", 0.72, "tCO2/ton"
         elif "acciaio" in attivita_lower or "alluminio" in attivita_lower: unita, soglia, target_unit = "Tonnellate", 1.3, "tCO2/ton"
@@ -326,15 +348,19 @@ with t_tax:
         else: unita, soglia, target_unit = "Unità", 1.0, "tCO2/unità"
 
         with col_tax2:
-            st.markdown(f"**Test Substantial Contribution (CCM):** `<= {soglia} {target_unit}`")
-            prod = st.number_input(f"Volume Annuo ({unita})", value=0, step=10000)
-            
-            int_calc = (st.session_state.em_final / prod) if prod > 0 else 0
-            if target_unit.startswith("g"): int_calc *= 1000 
-            elif "PUE" in target_unit: int_calc = 1.0 + (st.session_state.em_final / 1000000)
-            
-            tsc_passed = int_calc <= soglia and prod > 0
-            st.metric("Substantial Contribution", "Superato (Y)" if tsc_passed else "Non Superato (N)", delta_color="normal" if tsc_passed else "inverse")
+            if not is_eligible:
+                st.error("⚠️ L'attività selezionata **NON è attualmente ammissibile** ai sensi della Tassonomia UE. I test tecnici non sono applicabili.")
+                tsc_passed = False
+            else:
+                st.markdown(f"**Test Substantial Contribution (CCM):** `<= {soglia} {target_unit}`")
+                prod = st.number_input(f"Volume Annuo ({unita})", value=0, step=10000)
+                
+                int_calc = (st.session_state.em_final / prod) if prod > 0 else 0
+                if target_unit.startswith("g"): int_calc *= 1000 
+                elif "PUE" in target_unit: int_calc = 1.0 + (st.session_state.em_final / 1000000)
+                
+                tsc_passed = int_calc <= soglia and prod > 0
+                st.metric("Substantial Contribution", "Superato (Y)" if tsc_passed else "Non Superato (N)", delta_color="normal" if tsc_passed else "inverse")
             
         if st.button("➕ Inserisci in Tabella"):
             if capex_attivita > 0:
@@ -342,9 +368,10 @@ with t_tax:
                     "Economic activities": attivita,
                     "Code(s)": nace_code,
                     "Absolute CapEx (€)": capex_attivita,
-                    "TSC Passed": "Y" if tsc_passed else "N",
-                    "DNSH": "Y", 
-                    "Safeguards": "Y", 
+                    "Eligible (Y/N)": "Y" if is_eligible else "N",
+                    "TSC Passed": "Y" if (tsc_passed and is_eligible) else "N",
+                    "DNSH": "Y" if is_eligible else "N", 
+                    "Safeguards": "Y" if is_eligible else "N", 
                 })
                 st.success("Aggiunto!")
                 time.sleep(0.5)
@@ -360,7 +387,6 @@ with t_tax:
         
         st.markdown("✏️ **Personalizza e Pulisci:** Modifica direttamente i valori nella tabella (es. cambia i DNSH in 'N' per vedere l'impatto). Per cancellare una riga, seleziona la spunta a sinistra e premi Canc/Backspace.")
         
-        # TABELLA ESTETICAMENTE MIGLIORATA CON COLUMN_CONFIG
         edited_df = st.data_editor(
             df_tax,
             use_container_width=True,
@@ -369,27 +395,31 @@ with t_tax:
                 "Economic activities": st.column_config.TextColumn("Attività Economica", width="medium"),
                 "Code(s)": st.column_config.TextColumn("NACE", width="small"),
                 "Absolute CapEx (€)": st.column_config.NumberColumn("CapEx (€)", format="€ %d", width="small"),
+                "Eligible (Y/N)": st.column_config.TextColumn("Ammissibile", disabled=True, width="small"),
                 "TSC Passed": st.column_config.TextColumn("TSC (Y/N)", disabled=True, width="small"),
-                "DNSH": st.column_config.SelectboxColumn("DNSH", options=["Y", "N"], required=True, width="small"),
-                "Safeguards": st.column_config.SelectboxColumn("Min. Safeguards", options=["Y", "N"], required=True, width="small")
+                "DNSH": st.column_config.SelectboxColumn("DNSH", options=["Y", "N", "N/A"], required=True, width="small"),
+                "Safeguards": st.column_config.SelectboxColumn("Min. Safeguards", options=["Y", "N", "N/A"], required=True, width="small")
             },
             key="tax_editor"
         )
         
-        # Logica rigorosa di Allineamento
-        edited_df["Aligned"] = (edited_df["TSC Passed"] == "Y") & (edited_df["DNSH"] == "Y") & (edited_df["Safeguards"] == "Y")
+        # Logica rigorosa di Allineamento (deve essere ammissibile E superare tutti i test)
+        edited_df["Aligned"] = (edited_df["Eligible (Y/N)"] == "Y") & (edited_df["TSC Passed"] == "Y") & (edited_df["DNSH"] == "Y") & (edited_df["Safeguards"] == "Y")
         st.session_state.tax_portfolio = edited_df.drop(columns=["Aligned"]).to_dict('records')
         
         if st.button("🗑️ Svuota Tutto"):
             st.session_state.tax_portfolio = []
             st.rerun()
             
-        # Calcolo KPI
+        # Calcolo KPI per Dashboard
         capex_tot = st.session_state.capex_totale
-        capex_eligible = edited_df["Absolute CapEx (€)"].sum()
+        capex_eligible = edited_df[edited_df["Eligible (Y/N)"] == "Y"]["Absolute CapEx (€)"].sum()
+        capex_non_eligible = edited_df[edited_df["Eligible (Y/N)"] == "N"]["Absolute CapEx (€)"].sum()
         capex_aligned = edited_df[edited_df["Aligned"] == True]["Absolute CapEx (€)"].sum()
         
-        if capex_eligible > capex_tot: capex_tot = capex_eligible
+        # Adattiamo il denominatore se il portafoglio supera la baseline iniziale
+        capex_dichiarato = capex_eligible + capex_non_eligible
+        if capex_dichiarato > capex_tot: capex_tot = capex_dichiarato
         
         c_kpi1, c_kpi2 = st.columns([1, 1.5])
         with c_kpi1:
@@ -398,10 +428,13 @@ with t_tax:
             st.metric("Eligible proportion (%)", f"{(capex_eligible/capex_tot*100) if capex_tot>0 else 0:.2f} %")
             
         with c_kpi2:
+            # Ricalcolo quote non esaminate per far tornare a 100 il grafico
+            quota_non_esaminata = capex_tot - (capex_eligible + capex_non_eligible)
+            
             fig_pie = go.Figure(data=[go.Pie(
-                labels=["Aligned", "Eligible Not Aligned", "Non-Eligible"], 
-                values=[capex_aligned, capex_eligible - capex_aligned, capex_tot - capex_eligible], 
-                hole=.4, marker_colors=['#00B050', '#FECB52', '#C00000']
+                labels=["Aligned", "Eligible Not Aligned", "Non-Eligible", "Da Classificare"], 
+                values=[capex_aligned, capex_eligible - capex_aligned, capex_non_eligible, quota_non_esaminata], 
+                hole=.4, marker_colors=['#00B050', '#FECB52', '#C00000', '#D3D3D3']
             )])
             fig_pie.update_layout(margin=dict(t=20, b=0, l=0, r=0))
             st.plotly_chart(fig_pie, use_container_width=True)
@@ -478,20 +511,21 @@ with t_down:
         
         if st.session_state.tax_portfolio:
             df_export = pd.DataFrame(st.session_state.tax_portfolio)
-            tot_capex = st.session_state.capex_totale if st.session_state.capex_totale > df_export["Absolute CapEx (€)"].sum() else df_export["Absolute CapEx (€)"].sum()
+            capex_dichiarato = df_export["Absolute CapEx (€)"].sum()
+            tot_capex = st.session_state.capex_totale if st.session_state.capex_totale > capex_dichiarato else capex_dichiarato
             
-            # Calcoli rigorosi
+            # Calcoli rigorosi per l'export
             df_export["Proportion of CapEx (%)"] = (df_export["Absolute CapEx (€)"] / tot_capex * 100).round(2).astype(str) + "%"
-            df_export["Taxonomy-aligned"] = (df_export["TSC Passed"] == "Y") & (df_export["DNSH"] == "Y") & (df_export["Safeguards"] == "Y")
+            df_export["Taxonomy-aligned"] = (df_export["Eligible (Y/N)"] == "Y") & (df_export["TSC Passed"] == "Y") & (df_export["DNSH"] == "Y") & (df_export["Safeguards"] == "Y")
             df_export["Taxonomy-aligned proportion (%)"] = np.where(df_export["Taxonomy-aligned"], df_export["Proportion of CapEx (%)"], "0%")
-            df_export["Category"] = "Transitional"
+            df_export["Category"] = np.where(df_export["Eligible (Y/N)"] == "Y", "Transitional", "Non-Eligible")
             
-            # Mappatura Esatta Colonne Template
             export_cols = {
                 "Economic activities": "Economic activities",
                 "Code(s)": "Code(s)",
                 "Absolute CapEx (€)": "Absolute CapEx",
                 "Proportion of CapEx (%)": "Proportion of CapEx",
+                "Eligible (Y/N)": "Taxonomy-Eligible (Y/N)",
                 "TSC Passed": "Substantial contribution criteria - CCM",
                 "DNSH": "DNSH criteria (Y/N)",
                 "Safeguards": "Minimum Safeguards (Y/N)",
@@ -500,9 +534,7 @@ with t_down:
             }
             
             df_final_export = df_export.rename(columns=export_cols)[list(export_cols.values())]
-            
-            # Creazione CSV pulito
-            csv_data = df_final_export.to_csv(index=False, sep=";") # Uso il separatore ; per aprirsi bene in Excel
+            csv_data = df_final_export.to_csv(index=False, sep=";")
             
             st.download_button(
                 label="📥 Scarica Annex II CapEx (.CSV)", 
