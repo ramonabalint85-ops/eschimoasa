@@ -184,3 +184,24 @@ with tab_transizione:
     fig_trans.update_traces(line_shape='spline', line=dict(width=3))
     fig_trans.add_hline(y=0, line_dash="dot", line_color="red", annotation_text="Fallimento")
     fig_trans.update_layout(hovermode=False, legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, title=None))
+    st.plotly_chart(fig_trans, use_container_width=True)
+
+# ==========================================
+# SCHERMATA 4: RISCHIO FISICO
+# ==========================================
+with tab_fisico:
+    st.header("Valutazione Rischio Fisico (Danni Climatici)")
+    st.markdown("Oltre alle tasse, valuta i danni operativi dovuti a eventi estremi (Es. alluvioni) secondo lo scenario ad alte emissioni (RCP 8.5).")
+    
+    livello_rischio = st.radio("Livello di Esposizione Geografica dell'Asset:", ["Basso", "Medio", "Alto"], horizontal=True)
+    molt_danno = {"Basso": 0.01, "Medio": 0.03, "Alto": 0.06}[livello_rischio]
+    
+    fisico_data = []
+    for y in range(2020, 2055, 5):
+        opex_danneggiato = opex * (1 + ((y - 2020) * molt_danno))
+        profitto_fisico = revenue - opex_danneggiato
+        fisico_data.append({"Anno": y, "Utile Netto (Post-Danni)": profitto_fisico, "Rischio": livello_rischio})
+        
+    fig_fisico = px.bar(pd.DataFrame(fisico_data), x="Anno", y="Utile Netto (Post-Danni)", color="Rischio", template="plotly_white", color_discrete_sequence=['#ff9999' if livello_rischio=="Medio" else '#ff4d4d' if livello_rischio=="Alto" else '#99ccff'])
+    fig_fisico.update_layout(hovermode=False)
+    st.plotly_chart(fig_fisico, use_container_width=True)
