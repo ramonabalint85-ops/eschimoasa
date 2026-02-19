@@ -252,16 +252,73 @@ with t_trans:
         
     st.success(f"Strategia 2030: Riduci fisicamente a {st.session_state.em_final:,} tCO2 e acquista €{costo_offsetting:,.0f} in crediti per la neutralità.")
 
-# --- TAB 4: SUPPLY CHAIN NETWORK ---
+# --- TAB 4: SUPPLY CHAIN NETWORK & CBAM ---
 with t_supply:
-    st.header("🔗 Mappa della Supply Chain & Trasmissione Rischio")
-    labels = ["Fornitori (Extra-UE)", "Fornitori (UE)", "Tassa Doganale CBAM", "Tasse ETS (Locali)", "La Tua Azienda (OpEx)", "Utile Netto", "Perdita da Tasse"]
-    source = [0, 0, 1, 1, 2, 3, 4, 4]
-    target = [2, 4, 4, 4, 4, 4, 5, 6]
-    value = [st.session_state.scope3 * 0.6, st.session_state.scope3 * 0.4, st.session_state.scope3 * 0.6, st.session_state.scope1+st.session_state.scope2, st.session_state.opex, revenue - st.session_state.opex - 5000000, 5000000, 5000000]
+    st.header("🔗 Mappa della Supply Chain & Esposizione CBAM")
+    st.markdown("Valuta l'impatto del Carbon Border Adjustment Mechanism (CBAM) integrando i dati della **Banca Mondiale sulle Carbon Tax estere** per calcolare lo scomputo esatto.")
     
-    fig_sankey = go.Figure(data=[go.Sankey(node=dict(pad=15, thickness=20, line=dict(color="black", width=0.5), label=labels), link=dict(source=source, target=target, value=value))])
-    fig_sankey.update_layout(title_text="Flusso dei Costi Climatici lungo la Catena del Valore", font_size=12)
+    # Database simulato "World Bank Carbon Pricing" (Valori indicativi in €/tCO2)
+    wb_database = {
+        "Nessuna Tassa (Es. India, Turchia)": 0.0,
+        "Cina (China National ETS)": 10.0,
+        "Sud Africa (Carbon Tax)": 11.0,
+        "Regno Unito (UK ETS)": 45.0,
+        "Canada (Federal Carbon Pricing)": 55.0,
+        "Svizzera (Swiss ETS)": 68.0
+    }
+    
+    col_cbam1, col_cbam2 = st.columns(2)
+    
+    with col_cbam1:
+        st.subheader("🌍 Profilo di Importazione Extra-UE")
+        origine_fornitori = st.selectbox("Paese di Origine dei Fornitori (Extra-UE)", list(wb_database.keys()))
+        tassa_estera = wb_database[origine_fornitori]
+        
+        # Stimiamo che il 60% dello Scope 3 provenga da fornitori Extra-UE
+        emissioni_importate = st.number_input("Emissioni Fornitori Extra-UE (tCO2)", value=int(st.session_state.scope3 * 0.6), step=1000)
+        
+    with col_cbam2:
+        st.subheader("💶 Calcolo Finanziario CBAM")
+        prezzo_eu_ets = 70.0 # Prezzo stimato attuale del Carbonio in Europa
+        differenziale_cbam = max(0, prezzo_eu_ets - tassa_estera)
+        
+        costo_lordo_cbam = emissioni_importate * prezzo_eu_ets
+        sconto_tassa = emissioni_importate * tassa_estera
+        costo_netto_cbam = emissioni_importate * differenziale_cbam
+        
+        st.metric("Tassa Estera Pagata (Banca Mondiale)", f"€ {tassa_estera}/tCO2")
+        st.metric("Costo Netto CBAM Atteso", f"€ {costo_netto_cbam:,.0f}", f"- € {sconto_tassa:,.0f} (Sconto per tassa già pagata all'origine)", delta_color="inverse")
+
+    st.divider()
+    
+    # Sankey Diagram dinamico aggiornato con le nuove variabili CBAM
+    st.subheader("🔄 Flusso di trasmissione del costo del Carbonio")
+    labels = [
+        "Fornitori Extra-UE", "Fornitori UE", "Tassa Doganale LORDA", 
+        "Sconto Tasse Estere", "CBAM Netto (Da Pagare)", "La Tua Azienda (OpEx)", "Utile Netto"
+    ]
+    
+    source = [0, 0, 1, 2, 2, 4, 5, 5]
+    target = [2, 5, 5, 3, 4, 5, 5, 6]
+    
+    # Valori proporzionali per il grafico
+    val_fornitori_ue = st.session_state.scope3 - emissioni_importate
+    value = [
+        costo_lordo_cbam, # Da Fornitori Extra-UE a Tassa Lorda
+        val_fornitori_ue * prezzo_eu_ets, # Da Fornitori UE a Azienda
+        val_fornitori_ue * prezzo_eu_ets, # Da Fornitori UE a Azienda (flusso fittizio bilanciamento)
+        sconto_tassa, # Da Tassa Lorda a Sconto
+        costo_netto_cbam, # Da Tassa Lorda a CBAM Netto
+        costo_netto_cbam, # Da CBAM Netto ad Azienda
+        st.session_state.opex, # OpEx totale ad Azienda
+        (st.session_state.revenue - st.session_state.opex - costo_netto_cbam) # Utile Netto
+    ]
+    
+    fig_sankey = go.Figure(data=[go.Sankey(
+        node=dict(pad=15, thickness=20, line=dict(color="black", width=0.5), label=labels, color="#2E86AB"), 
+        link=dict(source=source, target=target, value=value, color="#EAEAEA")
+    )])
+    fig_sankey.update_layout(height=450, margin=dict(l=0, r=0, t=30, b=0))
     st.plotly_chart(fig_sankey, use_container_width=True)
 
 # --- TAB 5: COPERNICUS (RISCHIO FISICO GIS) ---
