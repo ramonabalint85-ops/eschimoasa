@@ -36,10 +36,9 @@ def get_tot_emissions(): return st.session_state.scope1 + st.session_state.scope
 def sync_from_perc(): st.session_state.em_final = int(get_tot_emissions() * (1 - st.session_state.perc_red / 100.0))
 def sync_from_scopes(): sync_from_perc()
 
-# --- MOTORE DATI, NACE E DATABASE CN CODES ---
+# --- MOTORE DATI, NACE E EU TAXONOMY JSON ---
 
 def get_nace_section(d_code):
-    """Mappa le divisioni (2 digit) alle corrispondenti sezioni NACE (A-V)"""
     try:
         d = int(d_code)
         if 1 <= d <= 3: return 'A'
@@ -68,13 +67,43 @@ def get_nace_section(d_code):
     return 'UNKNOWN'
 
 @st.cache_data
-def load_nace_hierarchy(file_content_or_path="NACE_Rev.2.1.rdf"):
+def load_taxonomy_json(file_content_or_path="taxonomy.json"):
     """
-    Parser RegEx Infallibile: ignora la validità XML e scansiona direttamente 
-    il testo puro alla ricerca dei codici e delle etichette italiane.
+    Legge il file JSON dell'EU Taxonomy Compass ed estrae dinamicamente 
+    tutti i prefissi NACE ammissibili dalla normativa.
     """
+    eligible_prefixes = set()
     try:
-        # 1. Lettura del file in formato stringa pura
+        if hasattr(file_content_or_path, 'getvalue'):
+            content = file_content_or_path.getvalue().decode('utf-8', errors='ignore')
+            data = json.loads(content)
+        else:
+            if not os.path.exists(file_content_or_path):
+                return None
+            with open(file_content_or_path, 'r', encoding='utf-8', errors='ignore') as f:
+                data = json.load(f)
+
+        for activity in data.get('activities', []):
+            nace_list = activity.get('nace_codes')
+            if nace_list:
+                for code in nace_list:
+                    if not code: continue
+                    clean_code = code.strip()
+                    # Rimuove le lettere (es. C25 -> 25, H49.3.9 -> 49.3.9) e i punti (-> 4939)
+                    num_part = re.sub(r'^[A-Z]+', '', clean_code, flags=re.IGNORECASE).replace('.', '')
+                    # Aggiunge uno zero iniziale se necessario (es. 2 -> 02, come nel settore Agricoltura)
+                    if len(num_part) == 1:
+                        num_part = "0" + num_part
+                    if num_part:
+                        eligible_prefixes.add(num_part)
+        return eligible_prefixes
+    except Exception as e:
+        print(f"Errore JSON: {e}")
+        return set()
+
+@st.cache_data
+def load_nace_hierarchy(file_content_or_path="NACE_Rev.2.1.rdf"):
+    try:
         if hasattr(file_content_or_path, 'getvalue'):
             content = file_content_or_path.getvalue().decode('utf-8', errors='ignore')
         else:
@@ -84,70 +113,50 @@ def load_nace_hierarchy(file_content_or_path="NACE_Rev.2.1.rdf"):
                 content = f.read()
 
         labels_by_code = {}
-        
-        # 2. Cerca tutti i blocchi rdf:Description che definiscono un codice NACE valido
-        # Ignora i prefissi inutili e intercetta sia le lettere (A-V) che i numeri (es. 01, 011, 0111)
         block_pattern = r'<rdf:Description[^>]*rdf:about="http://data\.europa\.eu/ux2/nace2\.1/(?:[^"]*_)?([A-V]|\d{2,4})"[^>]*>(.*?)</rdf:Description>'
         
         for match in re.finditer(block_pattern, content, re.DOTALL):
             code = match.group(1).strip()
             block = match.group(2)
-            
             if code not in labels_by_code:
                 labels_by_code[code] = {}
                 
-            # 3. Cerca le etichette IT o EN dentro il blocco. 
-            # re.DOTALL permette di leggere anche i tag spezzati su più righe!
             label_pattern = r'<skos:prefLabel[^>]*xml:lang="(it|en)"[^>]*>(.*?)</skos:prefLabel>'
             for l_match in re.finditer(label_pattern, block, re.DOTALL | re.IGNORECASE):
                 lang = l_match.group(1).lower()
                 text = re.sub(r'\s+', ' ', l_match.group(2)).strip()
                 labels_by_code[code][lang] = text
 
-        # 4. Inizializza i 4 livelli NACE
         sections, divisions, groups, classes = {}, {}, {}, {}
-        
         for code, langs in labels_by_code.items():
-            # Scegli Italiano se disponibile, altrimenti Inglese, altrimenti mostra solo il codice
             label = langs.get('it', langs.get('en', f"Attività {code}"))
-            
             if code.isalpha() and len(code) == 1:
-                label = re.sub(rf'^{code}\s*-?\s*', '', label) # Pulisce la stringa
+                label = re.sub(rf'^{code}\s*-?\s*', '', label)
                 sections[code] = {'label': f"{code} - {label}", 'children': {}}
-            
             elif code.isdigit() and len(code) == 2:
                 label = re.sub(rf'^{code}\s*-?\s*', '', label)
                 divisions[code] = {'label': f"{code} - {label}", 'children': {}}
-            
             elif len(code) == 3 and code.isdigit():
                 fmt_code = f"{code[:2]}.{code[2:]}"
                 label = re.sub(rf'^{code}\s*-?\s*', '', label)
                 label = re.sub(rf'^{fmt_code}\s*-?\s*', '', label)
                 groups[code] = {'label': f"{fmt_code} - {label}", 'children': {}}
-            
             elif len(code) == 4 and code.isdigit():
                 fmt_code = f"{code[:2]}.{code[2:]}"
                 label = re.sub(rf'^{code}\s*-?\s*', '', label)
                 label = re.sub(rf'^{fmt_code}\s*-?\s*', '', label)
                 classes[code] = {'label': f"{fmt_code} - {label}", 'code': fmt_code}
 
-        # 5. Alberatura Parent-Child dinamica
         for d_code, d_data in divisions.items():
             s_code = get_nace_section(d_code)
-            if s_code in sections:
-                sections[s_code]['children'][d_code] = d_data
-                
+            if s_code in sections: sections[s_code]['children'][d_code] = d_data
         for g_code, g_data in groups.items():
             d_code = g_code[:2]
-            if d_code in divisions:
-                divisions[d_code]['children'][g_code] = g_data
-                
+            if d_code in divisions: divisions[d_code]['children'][g_code] = g_data
         for c_code, c_data in classes.items():
             g_code = c_code[:3]
-            if g_code in groups:
-                groups[g_code]['children'][c_code] = c_data
+            if g_code in groups: groups[g_code]['children'][c_code] = c_data
                 
-        # 6. Ricostruzione Dizionario UI annidato
         ui_db = {}
         for s_code in sorted(sections.keys()):
             s_data = sections[s_code]
@@ -165,12 +174,10 @@ def load_nace_hierarchy(file_content_or_path="NACE_Rev.2.1.rdf"):
                         c_data = g_data['children'][c_code]
                         ui_db[s_data['label']][d_data['label']][g_data['label']][c_data['label']] = c_data['code']
                         
-        if not ui_db:
-            return {"ERRORE": {"Nessun dato utile estratto dal file RDF.": {"-": {"-": ""}}}}
-            
+        if not ui_db: return {"ERRORE": {"Nessun dato RDF utile.": {"-": {"-": ""}}}}
         return ui_db
     except Exception as e:
-        return {"ERRORE DI PARSING RIGOROSO": {str(e): {"-": {"-": ""}}}}
+        return {"ERRORE": {str(e): {"-": {"-": ""}}}}
 
 @st.cache_data
 def generate_offline_data():
@@ -294,7 +301,7 @@ st.title("🌍 Piattaforma CarbonRisk AI")
 st.markdown("Seleziona una delle schede qui sotto per procedere con l'analisi strategica.")
 
 t_home, t_rischi, t_tax, t_cbam, t_down = st.tabs([
-    "🏠 Home", "📊 Analisi Rischi", "🇪🇺 Tassonomia UE (NACE RDF)", "🌍 CBAM (Self-Assessment)", "📥 Download Ufficiali"
+    "🏠 Home", "📊 Analisi Rischi", "🇪🇺 Tassonomia UE (Automatica)", "🌍 CBAM (Self-Assessment)", "📥 Download Ufficiali"
 ])
 
 # --- TAB 1: HOME ---
@@ -399,29 +406,41 @@ with t_rischi:
         costo_offsetting = st.session_state.em_final * prezzo_ver
         st.metric("Costo Annuale per raggiungere neutralità climatica assoluta", f"€ {costo_offsetting:,.0f}")
 
-# --- TAB 3: TASSONOMIA UE (RDF ESTESO) ---
+# --- TAB 3: TASSONOMIA UE (RDF + JSON COMPASS) ---
 with t_tax:
-    st.header("🇪🇺 Reporting Tassonomia UE (Completo - NACE Rev. 2.1 RDF)")
+    st.header("🇪🇺 Reporting Tassonomia UE (Auto-Filtro con EU Compass)")
+    st.markdown("Il sistema carica l'intero albero **NACE** europeo e lo incrocia in tempo reale con i codici del database **EU Taxonomy Compass (JSON)**. Le attività non previste dalla Tassonomia (es. barbieri o estrazioni petrolifere) verranno automaticamente bloccate.")
     
-    # 1. Prova a caricare il database in automatico dalla cartella
+    # 1. Caricamento file NACE (RDF)
     nace_db = load_nace_hierarchy("NACE_Rev.2.1.rdf")
+    # 2. Caricamento EU Taxonomy Compass (JSON)
+    taxonomy_prefixes = load_taxonomy_json("taxonomy.json")
     
-    # 2. Gestione degli errori e fallback
+    mostra_successo = True
+    
     if nace_db is None:
-        st.error("❌ Errore: Il file NACE_Rev.2.1.rdf non è stato trovato nella directory in automatico.")
-        st.info("Trascina qui il file scaricato per sbloccare i settori:")
+        mostra_successo = False
+        st.error("❌ Errore: File NACE_Rev.2.1.rdf non trovato in directory.")
         file_nace_manuale = st.file_uploader("Carica NACE_Rev.2.1.rdf", type=['rdf', 'xml'])
         if file_nace_manuale:
             nace_db = load_nace_hierarchy(file_nace_manuale)
-            if "ERRORE" not in str(nace_db):
-                st.success("✅ File letto! I settori sono ora disponibili nei menu a tendina qui sotto.")
         else:
-            nace_db = {"In attesa del file...": {"-": {"-": {"-": ""}}}}
-            
+            nace_db = {"In attesa del file NACE...": {"-": {"-": {"-": ""}}}}
     elif "ERRORE" in str(list(nace_db.keys())[0]):
-        st.error(f"❌ Errore di decodifica del file: {list(nace_db.keys())[0]}")
-    else:
-        st.success("✅ Database NACE caricato automaticamente (Tutti i settori abilitati).")
+        mostra_successo = False
+        st.error(f"❌ Errore di lettura NACE: {list(nace_db.keys())[0]}")
+
+    if taxonomy_prefixes is None:
+        mostra_successo = False
+        st.error("❌ Errore: File taxonomy.json (EU Compass) non trovato.")
+        file_tax_manuale = st.file_uploader("Carica taxonomy.json", type=['json'])
+        if file_tax_manuale:
+            taxonomy_prefixes = load_taxonomy_json(file_tax_manuale)
+        else:
+            taxonomy_prefixes = set()
+
+    if mostra_successo and taxonomy_prefixes:
+        st.success("✅ Database NACE e EU Taxonomy Compass caricati e sincronizzati (Filtro Automatico Attivo).")
 
     c_tax_head1, c_tax_head2 = st.columns([1, 2])
     c_tax_head1.metric("CapEx Totale di Riferimento", f"€ {st.session_state.capex_totale:,.0f}")
@@ -439,7 +458,21 @@ with t_tax:
             attivita = classe.split(" - ", 1)[-1] if classe else ""
             
             capex_attivita = st.number_input("Absolute CapEx (€)", min_value=0, value=0, step=100000)
-            is_eligible = st.checkbox("☑️ Marca come Attività Ammissibile (Taxonomy-Eligible)", value=True)
+            
+            # --- INCROCIO DATI: BLOCCO AUTOMATICO ---
+            # Puliamo il codice utente dai punti per compararlo coi prefissi del JSON
+            user_nace_clean = nace_code.replace('.', '') if nace_code else ""
+            is_eligible = False
+            
+            if user_nace_clean and taxonomy_prefixes:
+                # Se la stringa NACE selezionata inizia con uno dei prefissi ammessi, l'attività passa
+                is_eligible = any(user_nace_clean.startswith(prefix) for prefix in taxonomy_prefixes)
+            
+            st.markdown("### Status Tassonomia:")
+            if is_eligible:
+                st.success("✅ **Attività Ammissibile (Eligible)**")
+            else:
+                st.error("❌ **Non Ammissibile** (Bloccato dall'EU Compass)")
 
         # Logica euristica per i test tecnici
         attivita_lower = attivita.lower()
@@ -454,7 +487,7 @@ with t_tax:
 
         with col_tax2:
             if not is_eligible:
-                st.error("⚠️ L'attività NON è marcata come ammissibile. I test tecnici non sono applicabili.")
+                st.error("⚠️ L'attività NON è ammissibile ai sensi del Regolamento UE. I test tecnici non sono applicabili.")
                 tsc_passed = False
             else:
                 st.markdown(f"**Test Substantial Contribution (CCM):** `<= {soglia} {target_unit}`")
@@ -507,7 +540,6 @@ with t_tax:
             key="tax_editor"
         )
         
-        # Logica rigorosa di Allineamento (deve essere ammissibile E superare tutti i test)
         edited_df["Aligned"] = (edited_df["Eligible (Y/N)"] == "Y") & (edited_df["TSC Passed"] == "Y") & (edited_df["DNSH"] == "Y") & (edited_df["Safeguards"] == "Y")
         st.session_state.tax_portfolio = edited_df.drop(columns=["Aligned"]).to_dict('records')
         
@@ -515,13 +547,11 @@ with t_tax:
             st.session_state.tax_portfolio = []
             st.rerun()
             
-        # Calcolo KPI per Dashboard
         capex_tot = st.session_state.capex_totale
         capex_eligible = edited_df[edited_df["Eligible (Y/N)"] == "Y"]["Absolute CapEx (€)"].sum()
         capex_non_eligible = edited_df[edited_df["Eligible (Y/N)"] == "N"]["Absolute CapEx (€)"].sum()
         capex_aligned = edited_df[edited_df["Aligned"] == True]["Absolute CapEx (€)"].sum()
         
-        # Adattiamo il denominatore se il portafoglio supera la baseline iniziale
         capex_dichiarato = capex_eligible + capex_non_eligible
         if capex_dichiarato > capex_tot: capex_tot = capex_dichiarato
         
@@ -532,9 +562,7 @@ with t_tax:
             st.metric("Eligible proportion (%)", f"{(capex_eligible/capex_tot*100) if capex_tot>0 else 0:.2f} %")
             
         with c_kpi2:
-            # Ricalcolo quote non esaminate per far tornare a 100 il grafico
             quota_non_esaminata = capex_tot - (capex_eligible + capex_non_eligible)
-            
             fig_pie = go.Figure(data=[go.Pie(
                 labels=["Aligned", "Eligible Not Aligned", "Non-Eligible", "Da Classificare"], 
                 values=[capex_aligned, capex_eligible - capex_aligned, capex_non_eligible, quota_non_esaminata], 
@@ -548,7 +576,6 @@ with t_cbam:
     st.header("🌍 CBAM Self-Assessment Tool (Basato su Codici CN)")
     st.markdown("Inizia a digitare il **Codice CN (Nomenclatura Combinata a 8 cifre)** o la descrizione della merce. Il sistema autocompleterà la ricerca e incrocerà i dati col database UE per determinare l'applicabilità di Annex I.")
     
-    # Dati Paesi di Riferimento CBAM
     paesi_origine = {
         "Cina (China National ETS)": {"Tax": 10.0, "Exempt": False},
         "India / Turchia (Nessuna Tassa)": {"Tax": 0.0, "Exempt": False},
@@ -560,7 +587,6 @@ with t_cbam:
         "Unione Europea (Produzione Interna)": {"Tax": 0.0, "Exempt": True}
     }
 
-    # Creazione della stringa di ricerca combinata per l'autocompletamento
     cn_options = df_cn_database.apply(lambda row: f"{row['CN Code']} - {row['Goods concerned']} ({row['Main Category']})", axis=1).tolist()
 
     with st.expander("➕ Compila Nuova Spedizione Doganale", expanded=True):
@@ -627,7 +653,6 @@ with t_cbam:
             st.session_state.cbam_portfolio = []
             st.rerun()
 
-        # CALCOLO FINANZIARIO
         df_applicabile = df_cbam[df_cbam["CBAM APPLICABILE"] == "SÌ"]
         emissioni_importate_tot = df_applicabile["Emissioni (tCO2)"].sum()
         
