@@ -115,30 +115,53 @@ with st.sidebar:
     # INTEGRAZIONE YFINANCE REALE
     if st.button("Sincronizza Database Pubblici"):
         with st.spinner("Connessione a YFinance, EEA e SBTi..."):
-            try:
-                if ticker:
+            if not ticker:
+                st.warning("Inserisci prima un Ticker valido (es. ENEL.MI o AAPL).")
+            else:
+                try:
                     stock = yf.Ticker(ticker)
-                    info = stock.info
                     
-                    # Recupera i ricavi (Revenue)
-                    if 'totalRevenue' in info and info['totalRevenue'] is not None:
-                        st.session_state.revenue = int(info['totalRevenue'])
-                        
-                        # Stima l'OpEx (Ricavi - EBITDA). Se l'EBITDA non c'è, usa una stima forfettaria (es. 80% dei ricavi)
-                        ebitda = info.get('ebitda')
-                        if ebitda is not None:
-                            st.session_state.opex = int(st.session_state.revenue - ebitda)
+                    # Inizializziamo variabili temporanee
+                    new_rev = None
+                    new_ebitda = None
+                    
+                    # PIANO A: Proviamo con il dizionario 'info'
+                    info = stock.info
+                    if info and 'totalRevenue' in info and info['totalRevenue'] is not None:
+                        new_rev = info.get('totalRevenue')
+                        new_ebitda = info.get('ebitda')
+                    
+                    # PIANO B: Se 'info' fallisce o è vuoto, andiamo a spulciare il bilancio reale (financials)
+                    if new_rev is None:
+                        fin = stock.financials
+                        if not fin.empty:
+                            if 'Total Revenue' in fin.index:
+                                new_rev = fin.loc['Total Revenue'].iloc[0]
+                            if 'EBITDA' in fin.index:
+                                new_ebitda = fin.loc['EBITDA'].iloc[0]
+                                
+                    # Se abbiamo trovato i ricavi, aggiorniamo il sistema
+                    if new_rev:
+                        st.session_state.revenue = int(new_rev)
+                        if new_ebitda and not pd.isna(new_ebitda):
+                            st.session_state.opex = int(new_rev - new_ebitda)
                         else:
-                            st.session_state.opex = int(st.session_state.revenue * 0.8)
+                            # Stima forfettaria se manca l'EBITDA
+                            st.session_state.opex = int(new_rev * 0.8)
                             
-                st.success("Sincronizzazione completata! Dati di mercato aggiornati.")
-                if piva: st.session_state.sbti_approved = True
-                time.sleep(1.5)
-                st.rerun() # Ricarica per mostrare i nuovi dati estratti da YFinance
-                
-            except Exception as e:
-                st.error(f"Impossibile scaricare dati per '{ticker}'. Verifica che il ticker sia corretto.")
+                        st.success(f"Dati di mercato aggiornati per {ticker.upper()}!")
+                    else:
+                        st.warning(f"Connesso a {ticker}, ma Yahoo Finance non ha esposto pubblicamente i Ricavi oggi. Riprova più tardi.")
 
+                    # Gestione P.IVA per SBTi
+                    if piva: 
+                        st.session_state.sbti_approved = True
+                    
+                    time.sleep(1.5)
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Il ticker '{ticker}' non è stato trovato o Yahoo ha bloccato la richiesta. Dettaglio errore: {e}")
     if st.session_state.sbti_approved:
         st.markdown("🎯 **Status:** `✅ Target SBTi Approvato`")
 
