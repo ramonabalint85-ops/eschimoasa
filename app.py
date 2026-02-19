@@ -37,7 +37,6 @@ def sync_from_perc(): st.session_state.em_final = int(get_tot_emissions() * (1 -
 def sync_from_scopes(): sync_from_perc()
 
 # --- MOTORE DATI, NACE E EU TAXONOMY JSON ---
-
 def get_nace_section(d_code):
     try:
         d = int(d_code)
@@ -283,8 +282,9 @@ with st.sidebar:
     st.divider()
     st.header("3. Inserimento Manuale Base")
     st.selectbox("Posizione Principale", df_base['Paese'].unique(), index=3, key='selected_country') 
-    st.number_input("Ricavi Annuali", value=st.session_state.revenue, step=1_000_000, key='revenue')
-    st.number_input("Costi Operativi (OpEx)", value=st.session_state.opex, step=1_000_000, key='opex')
+    st.number_input("Ricavi Annuali (Turnover)", value=st.session_state.revenue, step=1_000_000, key='revenue')
+    st.number_input("CapEx Totale Aziendale", value=st.session_state.capex_totale, step=1_000_000, key='capex_totale')
+    st.number_input("OpEx Totale Aziendale", value=st.session_state.opex, step=1_000_000, key='opex')
     
     if st.session_state.sbti_approved:
         st.markdown("🎯 **Status:** `✅ Target SBTi Approvato`")
@@ -294,7 +294,7 @@ st.title("🌍 Piattaforma CarbonRisk AI")
 st.markdown("Seleziona una delle schede qui sotto per procedere con l'analisi strategica.")
 
 t_home, t_rischi, t_tax, t_cbam, t_down = st.tabs([
-    "🏠 Home", "📊 Analisi Rischi", "🇪🇺 Tassonomia UE (Automatica)", "🌍 CBAM (Self-Assessment)", "📥 Download Ufficiali"
+    "🏠 Home", "📊 Analisi Rischi", "🇪🇺 Tassonomia UE (Completa)", "🌍 CBAM (Self-Assessment)", "📥 Download Ufficiali"
 ])
 
 # --- TAB 1: HOME ---
@@ -347,8 +347,7 @@ with t_rischi:
 
         st.divider()
         st.subheader("2. Simulatore CapEx di Transizione")
-        st.number_input("Investimento Transizione (CapEx in €)", value=st.session_state.capex_totale, step=1_000_000, key='capex_totale')
-        st.slider("Efficacia attesa (Riduzione Stimata %)", 0, 100, key='perc_red', on_change=sync_from_perc)
+        st.number_input("Efficacia attesa (Riduzione Stimata %)", 0, 100, key='perc_red', on_change=sync_from_perc)
         st.success(f"**Risultato Atteso:** Le emissioni nette finali scenderanno a **{st.session_state.em_final:,} tCO2**.")
 
     with rt_credito:
@@ -393,16 +392,10 @@ with t_rischi:
             fig_dopo.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
             st.plotly_chart(fig_dopo, use_container_width=True)
 
-        st.divider()
-        st.subheader("3. Carbon Offsetting (Crediti VERs per Net Zero)")
-        prezzo_ver = st.number_input("Prezzo Mercato Volontario (€/tCO2)", value=0)
-        costo_offsetting = st.session_state.em_final * prezzo_ver
-        st.metric("Costo Annuale per raggiungere neutralità climatica assoluta", f"€ {costo_offsetting:,.0f}")
-
-# --- TAB 3: TASSONOMIA UE (RDF + JSON COMPASS + WORKFLOW ERP) ---
+# --- TAB 3: TASSONOMIA UE (COMPLETA - TURNOVER, CAPEX, OPEX E OBIETTIVI) ---
 with t_tax:
-    st.header("🇪🇺 Reporting Tassonomia UE (Workflow Enterprise)")
-    st.markdown("Come nei modelli aziendali complessi (es. Gruppo VINCI), associa ogni progetto a un Cost Center ERP. Se l'attività è ammissibile secondo l'EU Compass, il Project Manager deve caricare le prove documentali necessarie ai fini di audit (DNSH, MS e SC).")
+    st.header("🇪🇺 Reporting Tassonomia UE (Modello Completo)")
+    st.markdown("Valuta l'ammissibilità tramite i codici NACE. Per ogni attività, specifica l'obiettivo ambientale primario e inserisci i 3 KPI chiave (Turnover, CapEx, OpEx). Le attività non ammissibili alimenteranno comunque i denominatori per calcolare l'esatta percentuale aziendale.")
     
     # 1. Caricamento Dati
     nace_db = load_nace_hierarchy("NACE_Rev.2.1.rdf")
@@ -413,91 +406,108 @@ with t_tax:
     if taxonomy_prefixes is None or not taxonomy_prefixes: mostra_successo = False
 
     if mostra_successo:
-        st.success("✅ Database NACE e EU Taxonomy Compass caricati e sincronizzati (Filtro Automatico Attivo).")
+        st.success("✅ Database NACE e EU Compass caricati. Sincronizzazione automatica attiva.")
     else:
-        st.warning("⚠️ Strutture dati in caricamento. Assicurati che NACE_Rev.2.1.rdf e taxonomy.json siano presenti su GitHub.")
+        st.warning("⚠️ Database non trovati. Usa i box per caricare NACE_Rev.2.1.rdf e taxonomy.json")
 
-    c_tax_head1, c_tax_head2 = st.columns([1, 2])
-    c_tax_head1.metric("CapEx Totale di Riferimento", f"€ {st.session_state.capex_totale:,.0f}")
-    
-    with st.expander("➕ Aggiungi Commessa ERP al Report CapEx", expanded=True):
-        # CAMPO STEP 3: TAGGING FINANZIARIO ERP
-        erp_id = st.text_input("🏢 ID Commessa / Cost Center ERP (es. SAP-PRJ-2026-001)", help="Il codice identificativo del progetto sul gestionale finanziario aziendale.")
+    with st.expander("➕ Aggiungi Commessa / Attività al Report", expanded=True):
+        erp_id = st.text_input("🏢 ID Commessa / Cost Center ERP (es. SAP-PRJ-2026-001)")
         st.divider()
         
         col_tax1, col_tax2 = st.columns(2)
 
         with col_tax1:
-            settore = st.selectbox("Sezione (Livello 1)", list(nace_db.keys()) if isinstance(nace_db, dict) and "ERRORE" not in str(nace_db) else [])
-            divisione = st.selectbox("Divisione (Livello 2)", list(nace_db[settore].keys()) if settore else [])
-            gruppo = st.selectbox("Gruppo (Livello 3)", list(nace_db[settore][divisione].keys()) if divisione else [])
-            classe = st.selectbox("Classe (Livello 4)", list(nace_db[settore][divisione][gruppo].keys()) if gruppo else [])
+            settore = st.selectbox("Sezione NACE", list(nace_db.keys()) if isinstance(nace_db, dict) and "ERRORE" not in str(nace_db) else [])
+            divisione = st.selectbox("Divisione NACE", list(nace_db[settore].keys()) if settore else [])
+            gruppo = st.selectbox("Gruppo NACE", list(nace_db[settore][divisione].keys()) if divisione else [])
+            classe = st.selectbox("Classe NACE", list(nace_db[settore][divisione][gruppo].keys()) if gruppo else [])
             
             nace_code = nace_db[settore][divisione][gruppo][classe] if classe else ""
             attivita = classe.split(" - ", 1)[-1] if classe else ""
             
-            capex_attivita = st.number_input("Absolute CapEx (€)", min_value=0, value=0, step=100000)
-            
-            # --- INCROCIO DATI: BLOCCO AUTOMATICO ---
+            # --- INCROCIO DATI: ELIGIBILITY AUTOMATICA ---
             user_nace_clean = nace_code.replace('.', '') if nace_code else ""
             is_eligible = False
             
             if user_nace_clean and taxonomy_prefixes:
                 is_eligible = any(user_nace_clean.startswith(prefix) for prefix in taxonomy_prefixes)
             
-            st.markdown("### Status Tassonomia:")
+            st.markdown("### Status di Ammissibilità:")
             if is_eligible:
                 st.success("✅ **Attività Ammissibile (Eligible)**")
             else:
-                st.error("❌ **Non Ammissibile** (Bloccato dall'EU Compass)")
+                st.info("ℹ️ **Non Ammissibile (Non-Eligible).** Puoi inserire comunque i valori finanziari: verranno sommati al denominatore per calcolare la percentuale corretta dell'azienda.")
+
+        with col_tax2:
+            st.markdown("### Selezione Obiettivo Ambientale")
+            obiettivi = [
+                "CCM - Mitigazione del Cambiamento Climatico",
+                "CCA - Adattamento al Cambiamento Climatico",
+                "WTR - Uso Sostenibile delle Acque",
+                "CE - Transizione verso Economia Circolare",
+                "PPC - Prevenzione e Controllo Inquinamento",
+                "BIO - Protezione Biodiversità ed Ecosistemi"
+            ]
+            obiettivo_sc = st.selectbox("A quale obiettivo contribuisce in modo sostanziale?", obiettivi)
+            
+            st.markdown("### Input Finanziario (KPIs)")
+            c_val1, c_val2, c_val3 = st.columns(3)
+            val_turnover = c_val1.number_input("Turnover/Ricavi (€)", min_value=0, value=0, step=10000)
+            val_capex = c_val2.number_input("CapEx (€)", min_value=0, value=0, step=10000)
+            val_opex = c_val3.number_input("OpEx (€)", min_value=0, value=0, step=10000)
+
+        st.divider()
 
         # Logica euristica per i test tecnici
         attivita_lower = attivita.lower()
-        if not is_eligible: unita, soglia, target_unit = "N/A", 0, "N/A"
-        elif "edifici" in attivita_lower or "costruzione" in attivita_lower or "immobili" in attivita_lower: unita, soglia, target_unit = "m2 Gestiti", 80.0, "kWh/m2"
+        if "edifici" in attivita_lower or "costruzione" in attivita_lower: unita, soglia, target_unit = "m2 Gestiti", 80.0, "kWh/m2"
         elif "trasporto" in attivita_lower or "veicoli" in attivita_lower: unita, soglia, target_unit = "tkm", 50.0, "gCO2/tkm"
         elif "cemento" in attivita_lower: unita, soglia, target_unit = "Tonnellate prodotte", 0.72, "tCO2/ton"
-        elif "acciaio" in attivita_lower or "alluminio" in attivita_lower or "metalli" in attivita_lower: unita, soglia, target_unit = "Tonnellate", 1.3, "tCO2/ton"
-        elif "energia" in attivita_lower or "elettricità" in attivita_lower or "fornitura" in attivita_lower: unita, soglia, target_unit = "MWh", 100.0, "gCO2/kWh"
+        elif "acciaio" in attivita_lower or "alluminio" in attivita_lower: unita, soglia, target_unit = "Tonnellate", 1.3, "tCO2/ton"
+        elif "energia" in attivita_lower or "elettricità" in attivita_lower: unita, soglia, target_unit = "MWh", 100.0, "gCO2/kWh"
         elif "dati" in attivita_lower or "informatici" in attivita_lower: unita, soglia, target_unit = "Terabyte (TB)", 1.2, "PUE"
         else: unita, soglia, target_unit = "Unità", 1.0, "tCO2/unità"
 
-        with col_tax2:
-            if not is_eligible:
-                st.error("⚠️ L'attività NON è ammissibile. Screening tecnico e documentale non richiesto.")
-                tsc_passed = False
-                file_sc_name, file_dnsh_name, file_ms_name = "N/A", "N/A", "N/A"
-            else:
-                # CAMPO STEP 2: WORKFLOW DI SCREENING TECNICO E DOCUMENT VAULT
-                st.markdown(f"**Test Substantial Contribution (CCM):** `<= {soglia} {target_unit}`")
+        if is_eligible:
+            st.markdown("### Screening Tecnico e Caricamento Prove (Document Vault)")
+            col_sc1, col_sc2 = st.columns(2)
+            with col_sc1:
+                st.markdown(f"**Test Substantial Contribution:** `<= {soglia} {target_unit}`")
                 prod = st.number_input(f"Volume Annuo ({unita})", value=0, step=10000)
                 int_calc = (st.session_state.em_final / prod) if prod > 0 else 0
                 if target_unit.startswith("g"): int_calc *= 1000 
                 elif "PUE" in target_unit: int_calc = 1.0 + (st.session_state.em_final / 1000000)
                 
                 tsc_passed = int_calc <= soglia and prod > 0
-                st.metric("Esito Substantial Contribution", "Superato (Y)" if tsc_passed else "Non Superato (N)", delta_color="normal" if tsc_passed else "inverse")
+                st.metric("Esito Test Automatico", "Superato (Y)" if tsc_passed else "Non Superato (N)", delta_color="normal" if tsc_passed else "inverse")
+            with col_sc2:
+                file_sc = st.file_uploader("1. Prova Substantial Contribution", type=["pdf", "xlsx", "docx"])
+                file_dnsh = st.file_uploader("2. Prova DNSH (es. Analisi Rischi)", type=["pdf", "xlsx"])
+                file_ms = st.file_uploader("3. Prova Minimum Safeguards", type=["pdf", "docx"])
                 
-                st.divider()
-                st.markdown("🔒 **Document Vault (Requisiti di Audit)**")
-                file_sc = st.file_uploader("1. Prova Substantial Contribution (es. LCA, EPC)", type=["pdf", "xlsx", "docx"])
-                file_dnsh = st.file_uploader("2. Prova DNSH (es. Analisi Rischi Fisici, VIA)", type=["pdf", "xlsx"])
-                file_ms = st.file_uploader("3. Prova Minimum Safeguards (es. Audit Supply Chain)", type=["pdf", "docx"])
-                
-                # Salviamo solo il nome del file per non appesantire il database
-                file_sc_name = file_sc.name if file_sc else "Mancante"
-                file_dnsh_name = file_dnsh.name if file_dnsh else "Mancante"
-                file_ms_name = file_ms.name if file_ms else "Mancante"
+            file_sc_name = file_sc.name if file_sc else "Mancante"
+            file_dnsh_name = file_dnsh.name if file_dnsh else "Mancante"
+            file_ms_name = file_ms.name if file_ms else "Mancante"
+        else:
+            tsc_passed = False
+            file_sc_name, file_dnsh_name, file_ms_name = "N/A", "N/A", "N/A"
+            file_dnsh = None
+            file_ms = None
             
-        if st.button("➕ Inserisci in Tabella / Registra a Sistema"):
+        if st.button("➕ Inserisci in Registro"):
             if not erp_id:
                 st.error("⚠️ Inserisci un ID Commessa ERP prima di procedere.")
-            elif capex_attivita > 0:
+            elif val_turnover == 0 and val_capex == 0 and val_opex == 0:
+                st.error("Inserisci almeno un valore finanziario (Turnover, CapEx o OpEx) > 0.")
+            else:
                 st.session_state.tax_portfolio.append({
                     "ERP Cost Center": erp_id,
                     "Economic activities": attivita,
                     "Code(s)": nace_code,
-                    "Absolute CapEx (€)": capex_attivita,
+                    "Objective": obiettivo_sc.split(" ")[0],
+                    "Turnover (€)": val_turnover,
+                    "CapEx (€)": val_capex,
+                    "OpEx (€)": val_opex,
                     "Eligible (Y/N)": "Y" if is_eligible else "N",
                     "TSC Passed": "Y" if (tsc_passed and is_eligible) else "N",
                     "DNSH": "Y" if (is_eligible and file_dnsh) else "N", 
@@ -506,19 +516,15 @@ with t_tax:
                     "Doc_DNSH": file_dnsh_name,
                     "Doc_MS": file_ms_name
                 })
-                st.success(f"Commessa {erp_id} registrata con successo e collegata alla Tassonomia!")
+                st.success(f"Attività registrata con successo!")
                 time.sleep(1)
                 st.rerun()
-            else:
-                st.error("Il CapEx deve essere > 0.")
 
     st.divider()
-    st.subheader("📊 EU Taxonomy CapEx Editor (Interattivo)")
+    st.subheader("📋 Registro Editor Tassonomia (Tutti i KPI)")
     
     if st.session_state.tax_portfolio:
         df_tax = pd.DataFrame(st.session_state.tax_portfolio)
-        
-        st.markdown("✏️ **Controllo Revisori:** Verifica le prove caricate e l'allineamento. Le attività prive dei documenti richiesti (Doc = 'Mancante') risulteranno in DNSH/Safeguards pari a 'N'.")
         
         edited_df = st.data_editor(
             df_tax,
@@ -526,50 +532,70 @@ with t_tax:
             num_rows="dynamic",
             column_config={
                 "ERP Cost Center": st.column_config.TextColumn("ID ERP", width="small"),
-                "Economic activities": st.column_config.TextColumn("Attività Economica", width="medium"),
+                "Economic activities": st.column_config.TextColumn("Attività", width="medium"),
                 "Code(s)": st.column_config.TextColumn("NACE", width="small"),
-                "Absolute CapEx (€)": st.column_config.NumberColumn("CapEx (€)", format="€ %d", width="small"),
+                "Objective": st.column_config.TextColumn("Obiettivo SC", width="small"),
+                "Turnover (€)": st.column_config.NumberColumn("Turnover (€)", format="€ %d", width="small"),
+                "CapEx (€)": st.column_config.NumberColumn("CapEx (€)", format="€ %d", width="small"),
+                "OpEx (€)": st.column_config.NumberColumn("OpEx (€)", format="€ %d", width="small"),
                 "Eligible (Y/N)": st.column_config.TextColumn("Ammissibile", disabled=True, width="small"),
                 "TSC Passed": st.column_config.TextColumn("TSC (Y/N)", disabled=True, width="small"),
-                "DNSH": st.column_config.SelectboxColumn("DNSH", options=["Y", "N", "N/A"], required=True, width="small"),
-                "Safeguards": st.column_config.SelectboxColumn("Safeguards", options=["Y", "N", "N/A"], required=True, width="small"),
-                "Doc_SC": st.column_config.TextColumn("Prova SC", disabled=True),
-                "Doc_DNSH": st.column_config.TextColumn("Prova DNSH", disabled=True),
-                "Doc_MS": st.column_config.TextColumn("Prova MS", disabled=True)
+                "DNSH": st.column_config.SelectboxColumn("DNSH", options=["Y", "N", "N/A"], width="small"),
+                "Safeguards": st.column_config.SelectboxColumn("Safeguards", options=["Y", "N", "N/A"], width="small"),
+                "Doc_SC": st.column_config.TextColumn("Doc SC", disabled=True),
+                "Doc_DNSH": st.column_config.TextColumn("Doc DNSH", disabled=True),
+                "Doc_MS": st.column_config.TextColumn("Doc MS", disabled=True)
             },
             key="tax_editor"
         )
         
+        # L'allineamento richiede che sia ammissibile e superi tutti i 3 test documentali
         edited_df["Aligned"] = (edited_df["Eligible (Y/N)"] == "Y") & (edited_df["TSC Passed"] == "Y") & (edited_df["DNSH"] == "Y") & (edited_df["Safeguards"] == "Y")
         st.session_state.tax_portfolio = edited_df.drop(columns=["Aligned"]).to_dict('records')
         
-        if st.button("🗑️ Svuota Tutto"):
+        if st.button("🗑️ Svuota Registro"):
             st.session_state.tax_portfolio = []
             st.rerun()
-            
-        capex_tot = st.session_state.capex_totale
-        capex_eligible = edited_df[edited_df["Eligible (Y/N)"] == "Y"]["Absolute CapEx (€)"].sum()
-        capex_non_eligible = edited_df[edited_df["Eligible (Y/N)"] == "N"]["Absolute CapEx (€)"].sum()
-        capex_aligned = edited_df[edited_df["Aligned"] == True]["Absolute CapEx (€)"].sum()
+
+        st.divider()
+        st.subheader("📊 Dashboard Risultati Tassonomia")
+
+        # Generazione delle 3 schede KPI come richiesto dalla normativa
+        tab_turnover, tab_capex, tab_opex = st.tabs(["💶 Turnover (Ricavi)", "🏗️ CapEx (Investimenti)", "⚙️ OpEx (Costi Operativi)"])
         
-        capex_dichiarato = capex_eligible + capex_non_eligible
-        if capex_dichiarato > capex_tot: capex_tot = capex_dichiarato
-        
-        c_kpi1, c_kpi2 = st.columns([1, 1.5])
-        with c_kpi1:
-            st.metric("Total Denominator (CapEx)", f"€ {capex_tot:,.0f}")
-            st.metric("Taxonomy-aligned proportion (%)", f"{(capex_aligned/capex_tot*100) if capex_tot>0 else 0:.2f} %")
-            st.metric("Eligible proportion (%)", f"{(capex_eligible/capex_tot*100) if capex_tot>0 else 0:.2f} %")
+        def render_kpi_tab(kpi_name, df, company_baseline):
+            col_name = f"{kpi_name} (€)"
+            tot_entered = df[col_name].sum()
+            # Il denominatore è il valore più alto tra i dati di base aziendali (inseriti a sinistra) e la somma delle attività registrate
+            denominator = max(company_baseline, tot_entered)
             
-        with c_kpi2:
-            quota_non_esaminata = capex_tot - (capex_eligible + capex_non_eligible)
-            fig_pie = go.Figure(data=[go.Pie(
-                labels=["Aligned", "Eligible Not Aligned", "Non-Eligible", "Da Classificare"], 
-                values=[capex_aligned, capex_eligible - capex_aligned, capex_non_eligible, quota_non_esaminata], 
-                hole=.4, marker_colors=['#00B050', '#FECB52', '#C00000', '#D3D3D3']
-            )])
-            fig_pie.update_layout(margin=dict(t=20, b=0, l=0, r=0))
-            st.plotly_chart(fig_pie, use_container_width=True)
+            val_eligible = df[df["Eligible (Y/N)"] == "Y"][col_name].sum()
+            val_non_eligible = df[df["Eligible (Y/N)"] == "N"][col_name].sum()
+            val_aligned = df[df["Aligned"] == True][col_name].sum()
+            val_eligible_not_aligned = val_eligible - val_aligned
+            val_unclassified = denominator - (val_eligible + val_non_eligible)
+            
+            c1, c2 = st.columns([1, 1.5])
+            with c1:
+                st.metric(f"Total Denominator ({kpi_name})", f"€ {denominator:,.0f}")
+                st.metric("Taxonomy-aligned proportion (%)", f"{(val_aligned/denominator*100) if denominator>0 else 0:.2f} %")
+                st.metric("Eligible proportion (%)", f"{(val_eligible/denominator*100) if denominator>0 else 0:.2f} %")
+                
+            with c2:
+                fig = go.Figure(data=[go.Pie(
+                    labels=["Aligned", "Eligible Not Aligned", "Non-Eligible", "Non Classificato"], 
+                    values=[val_aligned, val_eligible_not_aligned, val_non_eligible, val_unclassified], 
+                    hole=.4, marker_colors=['#00B050', '#FECB52', '#C00000', '#D3D3D3']
+                )])
+                fig.update_layout(margin=dict(t=20, b=0, l=0, r=0))
+                st.plotly_chart(fig, use_container_width=True)
+
+        with tab_turnover:
+            render_kpi_tab("Turnover", edited_df, st.session_state.revenue)
+        with tab_capex:
+            render_kpi_tab("CapEx", edited_df, st.session_state.capex_totale)
+        with tab_opex:
+            render_kpi_tab("OpEx", edited_df, st.session_state.opex)
 
 # --- TAB 4: CBAM SELF-ASSESSMENT TOOL CON SEARCH BAR ---
 with t_cbam:
@@ -593,23 +619,16 @@ with t_cbam:
         col_cb1, col_cb2 = st.columns(2)
         
         with col_cb1:
-            merce_selezionata = st.selectbox(
-                "🔍 Cerca Codice CN o Descrizione Merce (inizia a digitare per filtrare...)", 
-                options=cn_options,
-                index=None,
-                placeholder="Es. 25231000 o Cemento..."
-            )
-            
+            merce_selezionata = st.selectbox("🔍 Cerca Codice CN o Descrizione Merce", options=cn_options, index=None)
             if merce_selezionata:
                 codice_cn_estratto = merce_selezionata.split(" - ")[0]
                 dati_merce = df_cn_database[df_cn_database['CN Code'] == codice_cn_estratto].iloc[0]
                 st.success(f"**Categoria rilevata:** {dati_merce['Main Category']}")
-                
             emissioni_merce = st.number_input("Emissioni Incorporate Stimabili (tCO2)", min_value=0, value=0, step=100)
             
         with col_cb2:
-            origine_merce = st.selectbox("Paese di Origine (Regola di origine non preferenziale)", list(paesi_origine.keys()))
-            importato_ue = st.selectbox("Rilasciato per la libera pratica in UE? (Art. 203 UCC)", ["Sì", "No (Transito)"])
+            origine_merce = st.selectbox("Paese di Origine", list(paesi_origine.keys()))
+            importato_ue = st.selectbox("Rilasciato in libera pratica UE?", ["Sì", "No (Transito)"])
             valore_merce = st.number_input("Valore Intrinseco Spedizione (€)", min_value=0.0, value=0.0, step=100.0)
 
         if st.button("Valuta Dogana e Registra"):
@@ -618,7 +637,6 @@ with t_cbam:
                 is_3rd_country = "No" if paesi_origine[origine_merce]["Exempt"] else "Sì"
                 is_over_150 = "Sì" if valore_merce > 150.0 else "No"
                 is_free_circulation = "Sì" if importato_ue == "Sì" else "No"
-                
                 cbam_applies = (is_annex_i == "Yes") and (is_3rd_country == "Sì") and (is_over_150 == "Sì") and (is_free_circulation == "Sì")
 
                 st.session_state.cbam_portfolio.append({
@@ -628,25 +646,18 @@ with t_cbam:
                     "Origine": origine_merce,
                     "Valore (€)": valore_merce,
                     "Emissioni (tCO2)": emissioni_merce,
-                    "Test: Annex I?": is_annex_i,
-                    "Test: 3rd Country?": is_3rd_country,
-                    "Test: > 150€?": is_over_150,
-                    "Importato in UE": is_free_circulation,
                     "CBAM APPLICABILE": "SÌ" if cbam_applies else "NO",
                     "Tassa Estera": paesi_origine[origine_merce]["Tax"] if is_3rd_country == "Sì" else 0.0
                 })
                 st.success("Analisi doganale registrata con successo!")
                 time.sleep(0.5)
                 st.rerun()
-            else:
-                st.error("Devi cercare e selezionare una merce valida dal menù a tendina.")
 
     st.divider()
     st.subheader("📋 Registro Autovalutazione CBAM")
     
     if st.session_state.cbam_portfolio:
         df_cbam = pd.DataFrame(st.session_state.cbam_portfolio)
-        
         st.dataframe(df_cbam.style.applymap(lambda x: "background-color: #ffcccc" if x == "NO" else "background-color: #ccffcc" if x == "SÌ" else "", subset=["CBAM APPLICABILE"]), use_container_width=True)
         
         if st.button("🗑️ Cancella Registro CBAM"):
@@ -659,38 +670,26 @@ with t_cbam:
         if emissioni_importate_tot > 0:
             st.divider()
             st.subheader("💶 Rischio Finanziario CBAM (Sankey Diagram)")
-            
             sconto_tassa_totale = sum(row["Emissioni (tCO2)"] * row["Tassa Estera"] for _, row in df_applicabile.iterrows())
             prezzo_eu_ets = 70.0 
             costo_lordo_cbam = emissioni_importate_tot * prezzo_eu_ets
             costo_netto_cbam = max(0, costo_lordo_cbam - sconto_tassa_totale)
             
             c_cb1, c_cb2, c_cb3 = st.columns(3)
-            c_cb1.metric("Emissioni da Dichiarare (CBAM)", f"{emissioni_importate_tot:,.0f} tCO2")
-            c_cb2.metric("Sconto Fiscale (Tasse all'origine)", f"€ {sconto_tassa_totale:,.0f}")
-            c_cb3.metric("Costo Netto Certificati CBAM", f"€ {costo_netto_cbam:,.0f}", delta="Impatto su OpEx", delta_color="inverse")
+            c_cb1.metric("Emissioni da Dichiarare", f"{emissioni_importate_tot:,.0f} tCO2")
+            c_cb2.metric("Sconto Fiscale Estero", f"€ {sconto_tassa_totale:,.0f}")
+            c_cb3.metric("Costo Netto CBAM", f"€ {costo_netto_cbam:,.0f}", delta="Impatto su OpEx", delta_color="inverse")
 
-            labels = ["Fornitori Extra-UE (CBAM)", "Fornitori Esenti / UE / <150€", "Tassa Doganale LORDA", "Sconto Tasse Estere", "CBAM Netto (Da Pagare)", "Azienda (OpEx)", "Utile Netto"]
+            labels = ["Fornitori Extra-UE", "Fornitori Esenti", "Tassa Doganale", "Sconto Estero", "CBAM Netto", "Azienda (OpEx)", "Utile Netto"]
             source, target = [0, 0, 1, 2, 2, 4, 5, 5], [2, 5, 5, 3, 4, 5, 5, 6]
-            
             val_fornitori_esenti = max(0, st.session_state.scope3 - emissioni_importate_tot)
-            value = [
-                costo_lordo_cbam, val_fornitori_esenti * prezzo_eu_ets, val_fornitori_esenti * prezzo_eu_ets, 
-                sconto_tassa_totale, costo_netto_cbam, costo_netto_cbam, st.session_state.opex, 
-                (st.session_state.revenue - st.session_state.opex - costo_netto_cbam)
-            ]
+            value = [costo_lordo_cbam, val_fornitori_esenti * prezzo_eu_ets, val_fornitori_esenti * prezzo_eu_ets, sconto_tassa_totale, costo_netto_cbam, costo_netto_cbam, st.session_state.opex, (st.session_state.revenue - st.session_state.opex - costo_netto_cbam)]
             
-            fig_sankey = go.Figure(data=[go.Sankey(
-                node=dict(pad=15, thickness=20, line=dict(color="black", width=0.5), label=labels, color="#2E86AB"), 
-                link=dict(source=source, target=target, value=value, color="#EAEAEA")
-            )])
+            fig_sankey = go.Figure(data=[go.Sankey(node=dict(pad=15, thickness=20, label=labels, color="#2E86AB"), link=dict(source=source, target=target, value=value, color="#EAEAEA"))])
             fig_sankey.update_layout(height=450, margin=dict(l=0, r=0, t=30, b=0), font=dict(size=14, color="black", family="Arial, sans-serif"))
             st.plotly_chart(fig_sankey, use_container_width=True)
         else:
-            st.success("Nessuna delle merci inserite soddisfa tutti i requisiti per l'applicazione del CBAM. Nessun certificato da acquistare.")
-
-    else:
-        st.info("Seleziona il Codice CN e compila i dati doganali per verificare se le tue merci sono soggette al CBAM.")
+            st.success("Nessuna merce richiede l'acquisto di certificati CBAM.")
 
 # --- TAB 5: DOWNLOAD ---
 with t_down:
@@ -699,104 +698,52 @@ with t_down:
     col_d1, col_d2, col_d3 = st.columns(3)
     
     with col_d1:
-        st.subheader("1. Report Board (ESG & Rischi)")
+        st.subheader("1. Report Board")
         if st.button("🪄 Genera PDF"):
             pdf = FPDF()
             pdf.add_page()
             pdf.set_font("Arial", 'B', 18)
             pdf.cell(200, 15, txt="ESG & Climate Risk Report", ln=True, align='C')
             pdf_bytes = pdf.output(dest='S').encode('latin-1')
-            st.success("PDF pronto!")
             st.download_button("📥 Scarica (.PDF)", data=pdf_bytes, file_name="ESG_Report.pdf", mime="application/pdf")
 
     with col_d2:
         st.subheader("2. Tassonomia UE (Annex II)")
-        st.markdown("Genera la tabella ufficiale per il Bilancio di Sostenibilità.")
         if st.session_state.tax_portfolio:
             df_tax_export = pd.DataFrame(st.session_state.tax_portfolio)
-            capex_dichiarato = df_tax_export["Absolute CapEx (€)"].sum()
-            tot_capex = st.session_state.capex_totale if st.session_state.capex_totale > capex_dichiarato else capex_dichiarato
-            
-            df_tax_export["Proportion of CapEx (%)"] = (df_tax_export["Absolute CapEx (€)"] / tot_capex * 100).round(2).astype(str) + "%"
-            df_tax_export["Taxonomy-aligned"] = (df_tax_export["Eligible (Y/N)"] == "Y") & (df_tax_export["TSC Passed"] == "Y") & (df_tax_export["DNSH"] == "Y") & (df_tax_export["Safeguards"] == "Y")
-            df_tax_export["Taxonomy-aligned proportion (%)"] = np.where(df_tax_export["Taxonomy-aligned"], df_tax_export["Proportion of CapEx (%)"], "0%")
-            df_tax_export["Category"] = np.where(df_tax_export["Eligible (Y/N)"] == "Y", "Transitional", "Non-Eligible")
-            
-            export_cols = {
-                "Economic activities": "Economic activities",
-                "Code(s)": "Code(s)",
-                "Absolute CapEx (€)": "Absolute CapEx",
-                "Proportion of CapEx (%)": "Proportion of CapEx",
-                "Eligible (Y/N)": "Taxonomy-Eligible (Y/N)",
-                "TSC Passed": "Substantial contribution criteria - CCM",
-                "DNSH": "DNSH criteria (Y/N)",
-                "Safeguards": "Minimum Safeguards (Y/N)",
-                "Taxonomy-aligned proportion (%)": "Taxonomy-aligned proportion of CapEx",
-                "Category": "Category (enabling/transitional)"
-            }
-            
-            df_final_export = df_tax_export.rename(columns=export_cols)[list(export_cols.values())]
-            csv_tax = df_final_export.to_csv(index=False, sep=";")
-            st.download_button(label="📥 Scarica Annex II (.CSV)", data=csv_tax, file_name="EU_Taxonomy_Template.csv", mime="text/csv")
+            csv_tax = df_tax_export.to_csv(index=False, sep=";")
+            st.download_button(label="📥 Scarica Annex II Esteso (.CSV)", data=csv_tax, file_name="EU_Taxonomy_Complete.csv", mime="text/csv")
         else:
             st.warning("Compila Tab Tassonomia prima di esportare.")
 
     with col_d3:
-        st.subheader("3. Modello CBAM Self-Assessment")
-        st.markdown("Genera l'export per le dichiarazioni doganali UE.")
+        st.subheader("3. Export CBAM")
         if st.session_state.cbam_portfolio:
             df_cbam_export = pd.DataFrame(st.session_state.cbam_portfolio)
-            export_cbam_cols = {
-                "CN Code": "CN Code of good",
-                "Descrizione": "Goods Description",
-                "Origine": "Country of origin of good",
-                "Valore (€)": "Value of goods in consignment",
-                "Importato in UE": "The goods concerned are released for free circulation",
-                "Test: Annex I?": "Are goods subject to CBAM?",
-                "CBAM APPLICABILE": "CBAM Reporting Requirement"
-            }
-            df_final_cbam = df_cbam_export.rename(columns=export_cbam_cols)[list(export_cbam_cols.values())]
-            df_final_cbam.replace({"Sì": "Yes", "No": "No", "SÌ": "CBAM Applies", "NO": "No Action Required"}, inplace=True)
-            csv_cbam_data = df_final_cbam.to_csv(index=False, sep=",") 
-            st.download_button(label="📥 Scarica Modello CBAM (.CSV)", data=csv_cbam_data, file_name="CBAM_Self_Assessment_Export.csv", mime="text/csv")
+            csv_cbam_data = df_cbam_export.to_csv(index=False, sep=",") 
+            st.download_button(label="📥 Scarica Modello CBAM (.CSV)", data=csv_cbam_data, file_name="CBAM_Export.csv", mime="text/csv")
         else:
-            st.warning("⚠️ Compila il registro CBAM per abilitare l'export.")
+            st.warning("Compila il registro CBAM.")
 
     st.divider()
-    
-    # --- NUOVA SEZIONE: EXPORT ERP (SAP/ORACLE) ---
     st.subheader("🏭 4. Esportazione Tagging ERP (Integrazione Finance)")
-    st.markdown("Genera un file formattato a uso e consumo dei sistemi di contabilità aziendale (es. SAP, Microsoft Dynamics) per l'ingestion automatica dei Tag Tassonomici sui Centri di Costo.")
     
     if st.session_state.tax_portfolio:
         df_erp_export = pd.DataFrame(st.session_state.tax_portfolio)
-        
-        # Calcoliamo se la commessa è Allineata
         df_erp_export["Taxonomy-aligned"] = (df_erp_export["Eligible (Y/N)"] == "Y") & (df_erp_export["TSC Passed"] == "Y") & (df_erp_export["DNSH"] == "Y") & (df_erp_export["Safeguards"] == "Y")
         
-        # Strutturiamo un CSV pulito per macchine (ERP)
         df_erp_clean = df_erp_export[[
-            "ERP Cost Center", 
-            "Code(s)", 
-            "Absolute CapEx (€)", 
-            "Eligible (Y/N)", 
-            "Taxonomy-aligned"
+            "ERP Cost Center", "Code(s)", "Objective", "Turnover (€)", "CapEx (€)", "OpEx (€)", "Eligible (Y/N)", "Taxonomy-aligned"
         ]].copy()
         
-        # Aggiungiamo i metadati richiesti dagli ERP moderni
         df_erp_clean.rename(columns={
-            "Code(s)": "NACE_Code",
-            "Absolute CapEx (€)": "CapEx_Amount",
-            "Eligible (Y/N)": "Taxonomy_Eligible",
-            "Taxonomy-aligned": "Taxonomy_Aligned"
+            "Code(s)": "NACE_Code", "Objective": "Environmental_Objective", "Eligible (Y/N)": "Taxonomy_Eligible", "Taxonomy-aligned": "Taxonomy_Aligned"
         }, inplace=True)
-        
-        df_erp_clean["Environmental_Objective"] = np.where(df_erp_clean["Taxonomy_Eligible"] == "Y", "CCM", "N/A")
         
         csv_erp_data = df_erp_clean.to_csv(index=False, sep=",")
         
         c_erp1, c_erp2 = st.columns([1, 2])
         c_erp1.download_button(label="📥 Scarica File di Ingestion ERP (.CSV)", data=csv_erp_data, file_name="ERP_Taxonomy_Tagging.csv", mime="text/csv")
-        c_erp2.info("Questo file prenderà le commesse inserite nel Tab 3 e assocerà i Tag Finanziari pronti per essere letti dal database contabile.")
+        c_erp2.info("Questo file è formattato per l'importazione nei sistemi contabili aziendali (SAP, Oracle) per taggare automaticamente le commesse.")
     else:
         st.warning("Nessuna commessa inserita. Compila il Tab Tassonomia per generare il file di ingestion ERP.")
