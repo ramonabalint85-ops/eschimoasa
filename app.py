@@ -11,8 +11,7 @@ import json
 from openai import OpenAI
 from geopy.geocoders import Nominatim
 import os
-import xml.etree.ElementTree as ET
-import io
+import re
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="CarbonRisk AI Enterprise", layout="wide")
@@ -63,88 +62,92 @@ def get_nace_section(d_code):
         if 90 <= d <= 93: return 'R'
         if 94 <= d <= 96: return 'S'
         if 97 <= d <= 98: return 'T'
-        if d == 99: return 'U'
+        if d >= 99: return 'U'
     except:
         pass
     return 'UNKNOWN'
 
 @st.cache_data
 def load_nace_hierarchy(file_content_or_path="NACE_Rev.2.1.rdf"):
-    """Versione robusta con aggregazione multi-blocco XML"""
-    import xml.etree.ElementTree as ET
-    import io
-
+    """
+    Parser RegEx Infallibile: ignora la validità XML e scansiona direttamente 
+    il testo puro alla ricerca dei codici e delle etichette italiane.
+    """
     try:
-        # 1. Caricamento del file
+        # 1. Lettura del file in formato stringa pura
         if hasattr(file_content_or_path, 'getvalue'):
-            tree = ET.parse(io.BytesIO(file_content_or_path.getvalue()))
+            content = file_content_or_path.getvalue().decode('utf-8', errors='ignore')
         else:
             if not os.path.exists(file_content_or_path):
-                return None 
-            tree = ET.parse(file_content_or_path)
-            
-        root = tree.getroot()
-        
-        rdf_ns = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
-        skos_ns = 'http://www.w3.org/2004/02/skos/core#'
-        xml_ns = 'http://www.w3.org/XML/1998/namespace'
-        
-        # 2. FASE 1: Collezioniamo tutte le etichette unificando i blocchi XML sparsi
-        labels_by_lang = {}
-        
-        for desc in root.findall(f'.//{{{rdf_ns}}}Description'):
-            about = desc.attrib.get(f'{{{rdf_ns}}}about', '')
-            code = about.split('/')[-1]
-            
-            # Escludiamo configurazioni di sistema e mappature
-            if not code or 'NACE2' in about or 'SPACE' in about or 'MIG' in about: continue
-            if code in ['sections', 'divisions', 'groups', 'classes', 'nace2.1']: continue
-            
-            if code not in labels_by_lang:
-                labels_by_lang[code] = {}
-                
-            # Estraiamo i nomi e li salviamo per lingua
-            for l in desc.findall(f'.//{{{skos_ns}}}prefLabel'):
-                lang = l.attrib.get(f'{{{xml_ns}}}lang')
-                if lang in ['it', 'en'] and l.text:
-                    labels_by_lang[code][lang] = l.text
+                return None
+            with open(file_content_or_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
 
-        # 3. FASE 2: Creiamo le strutture applicando i nomi definitivi
+        labels_by_code = {}
+        
+        # 2. Cerca tutti i blocchi rdf:Description che definiscono un codice NACE valido
+        # Ignora i prefissi inutili e intercetta sia le lettere (A-V) che i numeri (es. 01, 011, 0111)
+        block_pattern = r'<rdf:Description[^>]*rdf:about="http://data\.europa\.eu/ux2/nace2\.1/(?:[^"]*_)?([A-V]|\d{2,4})"[^>]*>(.*?)</rdf:Description>'
+        
+        for match in re.finditer(block_pattern, content, re.DOTALL):
+            code = match.group(1).strip()
+            block = match.group(2)
+            
+            if code not in labels_by_code:
+                labels_by_code[code] = {}
+                
+            # 3. Cerca le etichette IT o EN dentro il blocco. 
+            # re.DOTALL permette di leggere anche i tag spezzati su più righe!
+            label_pattern = r'<skos:prefLabel[^>]*xml:lang="(it|en)"[^>]*>(.*?)</skos:prefLabel>'
+            for l_match in re.finditer(label_pattern, block, re.DOTALL | re.IGNORECASE):
+                lang = l_match.group(1).lower()
+                text = re.sub(r'\s+', ' ', l_match.group(2)).strip()
+                labels_by_code[code][lang] = text
+
+        # 4. Inizializza i 4 livelli NACE
         sections, divisions, groups, classes = {}, {}, {}, {}
         
-        for code, langs in labels_by_lang.items():
-            # Priorità: Italiano -> Inglese -> Codice grezzo se manca tutto
-            label = langs.get('it', langs.get('en', code)) 
+        for code, langs in labels_by_code.items():
+            # Scegli Italiano se disponibile, altrimenti Inglese, altrimenti mostra solo il codice
+            label = langs.get('it', langs.get('en', f"Attività {code}"))
             
-            if code.isalpha() and len(code) == 1: 
-                display_label = f"{code} - {label}" if not label.startswith(code) else label
-                sections[code] = {'label': display_label, 'children': {}}
-            elif code.isdigit() and len(code) == 2: 
-                display_label = f"{code} - {label}" if not label.startswith(code) else label
-                divisions[code] = {'label': display_label, 'children': {}}
-            elif len(code) == 3 and code.isdigit(): 
+            if code.isalpha() and len(code) == 1:
+                label = re.sub(rf'^{code}\s*-?\s*', '', label) # Pulisce la stringa
+                sections[code] = {'label': f"{code} - {label}", 'children': {}}
+            
+            elif code.isdigit() and len(code) == 2:
+                label = re.sub(rf'^{code}\s*-?\s*', '', label)
+                divisions[code] = {'label': f"{code} - {label}", 'children': {}}
+            
+            elif len(code) == 3 and code.isdigit():
                 fmt_code = f"{code[:2]}.{code[2:]}"
-                display_label = f"{fmt_code} - {label}" if not label.startswith(fmt_code) else label
-                groups[code] = {'label': display_label, 'children': {}}
-            elif len(code) == 4 and code.isdigit(): 
+                label = re.sub(rf'^{code}\s*-?\s*', '', label)
+                label = re.sub(rf'^{fmt_code}\s*-?\s*', '', label)
+                groups[code] = {'label': f"{fmt_code} - {label}", 'children': {}}
+            
+            elif len(code) == 4 and code.isdigit():
                 fmt_code = f"{code[:2]}.{code[2:]}"
-                display_label = f"{fmt_code} - {label}" if not label.startswith(fmt_code) else label
-                classes[code] = {'label': display_label, 'code': fmt_code}
+                label = re.sub(rf'^{code}\s*-?\s*', '', label)
+                label = re.sub(rf'^{fmt_code}\s*-?\s*', '', label)
+                classes[code] = {'label': f"{fmt_code} - {label}", 'code': fmt_code}
 
-        # 4. Costruisco l'albero relazionale parent-child
+        # 5. Alberatura Parent-Child dinamica
         for d_code, d_data in divisions.items():
             s_code = get_nace_section(d_code)
-            if s_code in sections: sections[s_code]['children'][d_code] = d_data
+            if s_code in sections:
+                sections[s_code]['children'][d_code] = d_data
                 
         for g_code, g_data in groups.items():
             d_code = g_code[:2]
-            if d_code in divisions: divisions[d_code]['children'][g_code] = g_data
+            if d_code in divisions:
+                divisions[d_code]['children'][g_code] = g_data
                 
         for c_code, c_data in classes.items():
             g_code = c_code[:3]
-            if g_code in groups: groups[g_code]['children'][c_code] = c_data
+            if g_code in groups:
+                groups[g_code]['children'][c_code] = c_data
                 
-        # 5. Pulizia del dizionario finale per darlo in pasto alle dropdown della UI
+        # 6. Ricostruzione Dizionario UI annidato
         ui_db = {}
         for s_code in sorted(sections.keys()):
             s_data = sections[s_code]
@@ -162,9 +165,13 @@ def load_nace_hierarchy(file_content_or_path="NACE_Rev.2.1.rdf"):
                         c_data = g_data['children'][c_code]
                         ui_db[s_data['label']][d_data['label']][g_data['label']][c_data['label']] = c_data['code']
                         
+        if not ui_db:
+            return {"ERRORE": {"Nessun dato utile estratto dal file RDF.": {"-": {"-": ""}}}}
+            
         return ui_db
     except Exception as e:
-        return {"ERRORE DI LETTURA XML": {str(e): {"-": {"-": ""}}}}
+        return {"ERRORE DI PARSING RIGOROSO": {str(e): {"-": {"-": ""}}}}
+
 @st.cache_data
 def generate_offline_data():
     data = []
@@ -399,20 +406,20 @@ with t_tax:
     # 1. Prova a caricare il database in automatico dalla cartella
     nace_db = load_nace_hierarchy("NACE_Rev.2.1.rdf")
     
-    # 2. Se non lo trova, avvisa l'utente e mostra il box per caricarlo a mano
+    # 2. Gestione degli errori e fallback
     if nace_db is None:
         st.error("❌ Errore: Il file NACE_Rev.2.1.rdf non è stato trovato nella directory in automatico.")
-        st.info("Trascina qui il file scaricato per sbloccare i 22 settori:")
+        st.info("Trascina qui il file scaricato per sbloccare i settori:")
         file_nace_manuale = st.file_uploader("Carica NACE_Rev.2.1.rdf", type=['rdf', 'xml'])
         if file_nace_manuale:
             nace_db = load_nace_hierarchy(file_nace_manuale)
-            if "ERRORE DI LETTURA XML" not in nace_db:
+            if "ERRORE" not in str(nace_db):
                 st.success("✅ File letto! I settori sono ora disponibili nei menu a tendina qui sotto.")
         else:
             nace_db = {"In attesa del file...": {"-": {"-": {"-": ""}}}}
             
-    elif "ERRORE DI LETTURA XML" in nace_db:
-        st.error(f"❌ Errore di lettura interno: {list(nace_db['ERRORE DI LETTURA XML'].keys())[0]}")
+    elif "ERRORE" in str(list(nace_db.keys())[0]):
+        st.error(f"❌ Errore di decodifica del file: {list(nace_db.keys())[0]}")
     else:
         st.success("✅ Database NACE caricato automaticamente (Tutti i settori abilitati).")
 
