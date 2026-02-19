@@ -188,18 +188,29 @@ def generate_offline_data():
 
 df_base = generate_offline_data()
 
-# --- NUOVO CARICATORE CN CODES ---
-@st.cache_data
+# --- NUOVO CARICATORE CN CODES (CON REFRESH CACHE) ---
+@st.cache_data(ttl=600) # Il TTL forza Streamlit a svuotare la memoria e rileggere il file nuovo!
 def load_cn_codes(file_path="cn_codes_clean.csv"):
+    fallback_df = pd.DataFrame({
+        "CN_Code": ["25231000", "72000000", "31021010"], 
+        "Description": ["Cemento (File CSV non trovato o in elaborazione)", "Ferro/Acciaio (Fallback)", "Fertilizzanti (Fallback)"]
+    })
+    
     try:
-        # Legge il file CSV leggero che hai generato in Colab
-        df_cn = pd.read_csv(file_path)
-        # Si assicura che il codice sia una stringa di 8 caratteri (es. 01010000)
-        df_cn['CN_Code'] = df_cn['CN_Code'].astype(str).str.zfill(8)
-        return df_cn
+        if os.path.exists(file_path):
+            # Forza la lettura come stringa (dtype=str) per non far sparire gli zeri in testa (es. 0101...)
+            df_cn = pd.read_csv(file_path, dtype=str)
+            
+            # Pulisce eventuali errori di riga vuota
+            if 'CN_Code' in df_cn.columns and 'Description' in df_cn.columns:
+                df_cn['CN_Code'] = df_cn['CN_Code'].fillna("00000000").str.zfill(8)
+                df_cn['Description'] = df_cn['Description'].fillna("Nessuna descrizione")
+                return df_cn
+                
+        return fallback_df
     except Exception as e:
-        # Fallback di emergenza
-        return pd.DataFrame({"CN_Code": ["25231000"], "Description": ["Cement clinkers (Manca il file cn_codes_clean.csv)"]})
+        print(f"Errore caricamento CN Codes: {e}")
+        return fallback_df
 
 df_cn_database = load_cn_codes()
 
@@ -213,7 +224,6 @@ def check_cbam_category(cn_code):
     if cn.startswith(('72', '7301', '7302', '7303', '7304', '7305', '7306', '7307', '7308', '7309', '7310', '7311', '7318', '7326')): return "Ferro e Acciaio"
     if cn.startswith(('7601', '7603', '7604', '7605', '7606', '7607', '7608', '7609')): return "Alluminio"
     return "Non Soggetto"
-
 
 # --- SIDEBAR: ESTRAZIONE E INSERIMENTO ---
 with st.sidebar:
