@@ -15,18 +15,19 @@ from geopy.geocoders import Nominatim
 st.set_page_config(page_title="CarbonRisk AI Enterprise", layout="wide")
 
 # --- SINCRONIZZAZIONE (Session State) ---
-# Inizializzati tutti a ZERO come richiesto
 if 'revenue' not in st.session_state: st.session_state.revenue = 0
 if 'opex' not in st.session_state: st.session_state.opex = 0
 if 'scope1' not in st.session_state: st.session_state.scope1 = 0
 if 'scope2' not in st.session_state: st.session_state.scope2 = 0
 if 'scope3' not in st.session_state: st.session_state.scope3 = 0
-if 'perc_red' not in st.session_state: st.session_state.perc_red = 50
+if 'perc_red' not in st.session_state: st.session_state.perc_red = 0
 if 'em_final' not in st.session_state: st.session_state.em_final = 0
 if 'sbti_approved' not in st.session_state: st.session_state.sbti_approved = False
 if 'rata_prestito' not in st.session_state: st.session_state.rata_prestito = 0
 if 'ammortamenti' not in st.session_state: st.session_state.ammortamenti = 0
 if 'policy_multiplier' not in st.session_state: st.session_state.policy_multiplier = 1.0
+if 'capex_totale' not in st.session_state: st.session_state.capex_totale = 0
+if 'tax_portfolio' not in st.session_state: st.session_state.tax_portfolio = []
 
 def get_tot_emissions(): return st.session_state.scope1 + st.session_state.scope2 + st.session_state.scope3
 def sync_from_perc(): st.session_state.em_final = int(get_tot_emissions() * (1 - st.session_state.perc_red / 100.0))
@@ -205,7 +206,8 @@ with t_rischi:
         
         st.subheader("2. Simulatore CapEx di Transizione")
         st.markdown("Investimenti pianificati per l'efficientamento e l'abbattimento delle emissioni lorde.")
-        capex = st.number_input("Investimento Transizione (CapEx in €)", value=0, step=1_000_000)
+        # Collegato a session_state per passarlo alla Tassonomia
+        st.number_input("Investimento Transizione (CapEx in €)", value=st.session_state.capex_totale, step=1_000_000, key='capex_totale')
         st.slider("Efficacia attesa (Riduzione Stimata %)", 0, 100, key='perc_red', on_change=sync_from_perc)
         st.success(f"**Risultato Atteso:** Le emissioni nette finali (Hard-to-abate) scenderanno a **{st.session_state.em_final:,} tCO2**.")
 
@@ -274,109 +276,132 @@ with t_rischi:
         costo_offsetting = st.session_state.em_final * prezzo_ver
         st.metric("Costo Annuale per raggiungere 'Net Zero'", f"€ {costo_offsetting:,.0f}")
 
-# --- TAB 3: TASSONOMIA UE ---
+# --- TAB 3: TASSONOMIA UE (SOPHISTICATED CAPEX) ---
 with t_tax:
-    st.header("🇪🇺 Allineamento Tassonomia UE (EU Taxonomy Compass)")
-    st.markdown("Valuta l'allineamento delle tue attività economiche ai Criteri di Vaglio Tecnico (TSC) della Tassonomia Europea. L'analisi è basata sulle emissioni residue **dopo** il piano di transizione.")
+    st.header("🇪🇺 Analisi CapEx - Tassonomia UE (Articolo 8)")
+    st.markdown("Costruisci il tuo portafoglio di attività per calcolare la percentuale di CapEx Ammissibile (Eligible) e Allineato (Aligned) secondo la Tassonomia Europea, in base ai Criteri di Vaglio Tecnico (TSC).")
 
-    # Struttura Dati a Cascata (Settori -> Attività Specifiche)
+    # Struttura Dati a Cascata
     tassonomia_db = {
-        "Agricoltura, silvicoltura e pesca": [
-            "Coltivazione di colture perenni/non perenni",
-            "Allevamento di bestiame",
-            "Silvicoltura e gestione forestale"
-        ],
-        "Attività manifatturiere": [
-            "Fabbricazione di cemento",
-            "Fabbricazione di alluminio",
-            "Fabbricazione di ferro e acciaio",
-            "Fabbricazione di prodotti chimici",
-            "Fabbricazione di batterie",
-            "Fabbricazione di tecnologie per l'efficienza energetica"
-        ],
-        "Fornitura di energia (Elettricità, Gas, Vapore)": [
-            "Produzione di energia solare fotovoltaica",
-            "Produzione di energia eolica",
-            "Produzione di energia idroelettrica",
-            "Trasmissione e distribuzione di energia elettrica",
-            "Cogenerazione ad alto rendimento"
-        ],
-        "Acqua, Rifiuti e Risanamento": [
-            "Gestione e distribuzione dell'acqua",
-            "Trattamento delle acque reflue",
-            "Recupero di materiali da rifiuti non pericolosi (Economia Circolare)"
-        ],
-        "Trasporto e magazzinaggio": [
-            "Trasporto passeggeri su strada interurbano",
-            "Trasporto merci su strada",
-            "Infrastrutture per la mobilità a zero emissioni",
-            "Trasporto marittimo, costiero e fluviale"
-        ],
-        "Costruzioni e attività immobiliari": [
-            "Costruzione di nuovi edifici",
-            "Ristrutturazione di edifici esistenti",
-            "Installazione e manutenzione di tecnologie per l'efficienza energetica",
-            "Acquisto e proprietà di edifici (Real Estate)"
-        ],
-        "Informazione e comunicazione (ICT)": [
-            "Elaborazione dei dati, hosting e attività connesse (Data Center)",
-            "Soluzioni basate sui dati per la riduzione delle emissioni (Software)"
-        ]
+        "Agricoltura, silvicoltura e pesca": ["Coltivazione di colture perenni/non perenni", "Allevamento di bestiame", "Silvicoltura e gestione forestale"],
+        "Attività manifatturiere": ["Fabbricazione di cemento", "Fabbricazione di alluminio", "Fabbricazione di ferro e acciaio", "Fabbricazione di batterie", "Fabbricazione di tecnologie per l'efficienza energetica"],
+        "Fornitura di energia (Elettricità, Gas, Vapore)": ["Produzione di energia solare fotovoltaica", "Produzione di energia eolica", "Produzione di energia idroelettrica", "Trasmissione e distribuzione di energia elettrica", "Cogenerazione ad alto rendimento"],
+        "Acqua, Rifiuti e Risanamento": ["Gestione e distribuzione dell'acqua", "Trattamento delle acque reflue", "Recupero di materiali da rifiuti non pericolosi (Economia Circolare)"],
+        "Trasporto e magazzinaggio": ["Trasporto passeggeri su strada interurbano", "Trasporto merci su strada", "Infrastrutture per la mobilità a zero emissioni", "Trasporto marittimo, costiero e fluviale"],
+        "Costruzioni e attività immobiliari": ["Costruzione di nuovi edifici", "Ristrutturazione di edifici esistenti", "Installazione e manutenzione di tecnologie per l'efficienza energetica", "Acquisto e proprietà di edifici (Real Estate)"],
+        "Informazione e comunicazione (ICT)": ["Elaborazione dei dati, hosting e attività connesse (Data Center)", "Soluzioni basate sui dati per la riduzione delle emissioni (Software)"]
     }
 
-    col_tax1, col_tax2 = st.columns(2)
-
-    with col_tax1:
-        st.subheader("1. Classificazione dell'Attività")
-        settore = st.selectbox("Macro-Settore Economico (NACE)", list(tassonomia_db.keys()))
-        attivita = st.selectbox("Attività Economica Specifica", tassonomia_db[settore])
-
-    # Assegnazione dinamica di metriche, unità e soglie
-    attivita_lower = attivita.lower()
-    settore_lower = settore.lower()
+    c_tax_head1, c_tax_head2 = st.columns([1, 2])
+    c_tax_head1.metric("CapEx Totale di Riferimento", f"€ {st.session_state.capex_totale:,.0f}")
     
-    if "edifici" in attivita_lower or "real estate" in attivita_lower:
-        unita, soglia, target_unit = "Metri Quadri Gestiti (m2)", 80.0, "kWh/m2 (Classe A)"
-    elif "trasporto" in attivita_lower or "mobilità" in attivita_lower:
-        unita, soglia, target_unit = "Tonnellate per km (tkm)", 50.0, "gCO2/tkm"
-    elif "agricoltura" in settore_lower or "silvicoltura" in attivita_lower or "allevamento" in attivita_lower:
-        unita, soglia, target_unit = "Ettari Coltivati/Gestiti", 2.5, "tCO2eq/Ettaro"
-    elif "cemento" in attivita_lower:
-        unita, soglia, target_unit = "Tonnellate prodotte", 0.72, "tCO2/ton"
-    elif "acciaio" in attivita_lower or "alluminio" in attivita_lower:
-        unita, soglia, target_unit = "Tonnellate prodotte", 1.3, "tCO2/ton"
-    elif "energia" in settore_lower:
-        unita, soglia, target_unit = "MWh Erogati", 100.0, "gCO2/kWh"
-    elif "data center" in attivita_lower:
-        unita, soglia, target_unit = "Terabyte Gestiti (TB)", 1.2, "PUE (Power Usage Effectiveness)"
-    else:
-        unita, soglia, target_unit = "Unità Prodotte/Gestite", 1.0, "tCO2/unità"
+    with st.expander("➕ Aggiungi una nuova attività al calcolo CapEx", expanded=True):
+        col_tax1, col_tax2 = st.columns(2)
 
-    with col_tax2:
-        st.subheader("2. Parametri (Mitigazione Climatica)")
-        st.markdown(f"**Soglia di Allineamento UE:** `<= {soglia} {target_unit}`")
-        prod = st.number_input(f"Volume Annuo di Produzione/Gestione ({unita})", value=0, step=10000)
+        with col_tax1:
+            st.subheader("1. Classificazione")
+            settore = st.selectbox("Macro-Settore Economico (NACE)", list(tassonomia_db.keys()))
+            attivita = st.selectbox("Attività Economica Specifica", tassonomia_db[settore])
+            capex_attivita = st.number_input("Quota di CapEx per questa attività (€)", min_value=0, value=0, step=100000)
 
-        # CALCOLO INTENSITÀ BASATO SULLE EMISSIONI POST-TRANSIZIONE (em_final)
-        int_calc = (st.session_state.em_final / prod) if prod > 0 else 0
-
-        # Aggiustamenti specifici per unità di misura
-        if target_unit.startswith("g"):
-            int_calc *= 1000 # Convertiamo da tonnellate a grammi
-        elif "PUE" in target_unit:
-            int_calc = 1.0 + (st.session_state.em_final / 1000000) 
-
-        is_aligned = int_calc <= soglia
-
-        st.metric(
-            "Intensità Attuale (Post-CapEx)", 
-            f"{int_calc:.2f} {target_unit.split(' ')[0]}", 
-            delta="ALLINEATO ALLA TASSONOMIA UE" if is_aligned and prod > 0 else "INSERISCI VOLUMI" if prod == 0 else "NON ALLINEATO", 
-            delta_color="normal" if is_aligned and prod > 0 else "off" if prod == 0 else "inverse"
-        )
+        # Assegnazione logica dinamica
+        attivita_lower = attivita.lower()
+        settore_lower = settore.lower()
         
+        if "edifici" in attivita_lower or "real estate" in attivita_lower: unita, soglia, target_unit = "Metri Quadri Gestiti (m2)", 80.0, "kWh/m2 (Classe A)"
+        elif "trasporto" in attivita_lower or "mobilità" in attivita_lower: unita, soglia, target_unit = "Tonnellate per km (tkm)", 50.0, "gCO2/tkm"
+        elif "agricoltura" in settore_lower or "silvicoltura" in attivita_lower or "allevamento" in attivita_lower: unita, soglia, target_unit = "Ettari Coltivati", 2.5, "tCO2eq/Ettaro"
+        elif "cemento" in attivita_lower: unita, soglia, target_unit = "Tonnellate prodotte", 0.72, "tCO2/ton"
+        elif "acciaio" in attivita_lower or "alluminio" in attivita_lower: unita, soglia, target_unit = "Tonnellate prodotte", 1.3, "tCO2/ton"
+        elif "energia" in settore_lower: unita, soglia, target_unit = "MWh Erogati", 100.0, "gCO2/kWh"
+        elif "data center" in attivita_lower: unita, soglia, target_unit = "Terabyte Gestiti (TB)", 1.2, "PUE (Efficienza)"
+        else: unita, soglia, target_unit = "Unità Prodotte/Gestite", 1.0, "tCO2/unità"
+
+        with col_tax2:
+            st.subheader("2. Test di Vaglio Tecnico (TSC)")
+            st.markdown(f"**Soglia Richiesta:** `<= {soglia} {target_unit}`")
+            prod = st.number_input(f"Volume Annuo previsto ({unita})", value=0, step=10000)
+
+            int_calc = (st.session_state.em_final / prod) if prod > 0 else 0
+            if target_unit.startswith("g"): int_calc *= 1000 
+            elif "PUE" in target_unit: int_calc = 1.0 + (st.session_state.em_final / 1000000) 
+
+            is_aligned = int_calc <= soglia and prod > 0
+
+            st.metric(
+                "Intensità Attuale Stimata", 
+                f"{int_calc:.2f} {target_unit.split(' ')[0]}", 
+                delta="ALLINEATO AI TSC" if is_aligned else "COMPILA VOLUMI" if prod == 0 else "NON ALLINEATO", 
+                delta_color="normal" if is_aligned else "off" if prod == 0 else "inverse"
+            )
+            
+        if st.button("➕ Aggiungi al Portafoglio Tassonomia"):
+            if capex_attivita > 0:
+                st.session_state.tax_portfolio.append({
+                    "Settore": settore,
+                    "Attività": attivita,
+                    "CapEx (€)": capex_attivita,
+                    "Ammissibile": "Sì",
+                    "Allineato": "Sì" if is_aligned else "No",
+                    "Intensità": round(int_calc, 2)
+                })
+                st.success(f"Attività aggiunta al portafoglio!")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Inserisci un valore CapEx maggiore di zero per questa attività.")
+
     st.divider()
-    st.info("💡 **Nota Normativa:** I valori di soglia mostrati sono basati sui Criteri di Vaglio Tecnico (TSC) ufficiali. Per l'allineamento finale, l'attività deve anche superare i test DNSH (*Do No Significant Harm*) agli altri obiettivi ambientali e rispettare le Garanzie Minime Sociali (Diritti Umani e Lavoro).")
+    
+    st.subheader("📊 Dashboard Reportistica EU Taxonomy")
+    if st.session_state.tax_portfolio:
+        df_tax = pd.DataFrame(st.session_state.tax_portfolio)
+        st.dataframe(df_tax, use_container_width=True)
+        
+        if st.button("🗑️ Svuota Portafoglio"):
+            st.session_state.tax_portfolio = []
+            st.rerun()
+            
+        # CALCOLI KPI TASSONOMIA
+        capex_tot_sistema = st.session_state.capex_totale
+        capex_eligible = df_tax["CapEx (€)"].sum()
+        capex_aligned = df_tax[df_tax["Allineato"] == "Sì"]["CapEx (€)"].sum()
+        
+        # Controllo di coerenza: se aggiungono più CapEx di quello totale dichiarato, si adatta
+        if capex_eligible > capex_tot_sistema:
+            st.warning("Il totale delle attività supera il CapEx di sistema. Il CapEx totale è stato ricalibrato in automatico per questa vista.")
+            capex_tot_sistema = capex_eligible
+            
+        capex_non_eligible = capex_tot_sistema - capex_eligible
+        capex_eligible_not_aligned = capex_eligible - capex_aligned
+        
+        # 1. Grafico a Torta Globale
+        labels_pie = ["Allineato (Aligned)", "Ammissibile ma NON Allineato", "Non Ammissibile (Non-Eligible)"]
+        values_pie = [capex_aligned, capex_eligible_not_aligned, capex_non_eligible]
+        colors_pie = ['#00B050', '#FECB52', '#C00000']
+        
+        fig_pie_tax = go.Figure(data=[go.Pie(labels=labels_pie, values=values_pie, hole=.4, marker_colors=colors_pie)])
+        fig_pie_tax.update_layout(title_text="Suddivisione CapEx Tassonomia UE (Articolo 8)", margin=dict(t=40, b=0, l=0, r=0))
+        
+        # 2. Grafico a Barre per Attività
+        fig_bar_tax = px.bar(df_tax, x="Attività", y="CapEx (€)", color="Allineato", 
+                             color_discrete_map={"Sì": "#00B050", "No": "#FECB52"},
+                             title="Spaccato CapEx Ammissibile per Attività")
+        
+        # Layout Visuale
+        c_kpi1, c_kpi2 = st.columns([1, 1.5])
+        with c_kpi1:
+            st.metric("CapEx Totale Esaminato", f"€ {capex_tot_sistema:,.0f}")
+            st.metric("% CapEx ALLINEATO (Green Asset Ratio)", f"{(capex_aligned/capex_tot_sistema*100) if capex_tot_sistema>0 else 0:.1f} %")
+            st.metric("% CapEx AMMISSIBILE (Totale)", f"{(capex_eligible/capex_tot_sistema*100) if capex_tot_sistema>0 else 0:.1f} %")
+            st.metric("CapEx Non Ammissibile", f"€ {capex_non_eligible:,.0f}")
+        with c_kpi2:
+            st.plotly_chart(fig_pie_tax, use_container_width=True)
+            
+        st.plotly_chart(fig_bar_tax, use_container_width=True)
+            
+    else:
+        st.info("Inizia ad aggiungere attività tramite il menu a tendina qui sopra per generare i KPI, le % di allineamento e i grafici a torta e a barre di scomposizione.")
 
 # --- TAB 4: CBAM E SUPPLY CHAIN ---
 with t_cbam:
