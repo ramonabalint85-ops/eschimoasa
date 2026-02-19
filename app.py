@@ -356,49 +356,58 @@ with t_tax:
     st.subheader("📊 Dashboard Reportistica EU Taxonomy")
     if st.session_state.tax_portfolio:
         df_tax = pd.DataFrame(st.session_state.tax_portfolio)
-        st.dataframe(df_tax, use_container_width=True)
         
-        if st.button("🗑️ Svuota Portafoglio"):
+        st.markdown("✏️ **Tabella Interattiva:** Clicca sulle celle per *modificare* i valori. Per **cancellare una singola voce**, seleziona la casellina a sinistra della riga e premi l'icona del cestino (o il tasto Canc/Backspace).")
+        
+        # NUOVO COMPONENTE: Data Editor Modificabile
+        edited_df = st.data_editor(
+            df_tax,
+            use_container_width=True,
+            num_rows="dynamic", # Permette l'aggiunta e rimozione di righe
+            key="tax_editor"
+        )
+        
+        # Sincronizza istantaneamente le modifiche fatte o le righe eliminate nel session_state
+        st.session_state.tax_portfolio = edited_df.to_dict('records')
+        
+        if st.button("🗑️ Svuota Portafoglio Intero"):
             st.session_state.tax_portfolio = []
             st.rerun()
             
-        # CALCOLI KPI TASSONOMIA
-        capex_tot_sistema = st.session_state.capex_totale
-        capex_eligible = df_tax["CapEx (€)"].sum()
-        capex_aligned = df_tax[df_tax["Allineato"] == "Sì"]["CapEx (€)"].sum()
-        
-        # Controllo di coerenza: se aggiungono più CapEx di quello totale dichiarato, si adatta
-        if capex_eligible > capex_tot_sistema:
-            st.warning("Il totale delle attività supera il CapEx di sistema. Il CapEx totale è stato ricalibrato in automatico per questa vista.")
-            capex_tot_sistema = capex_eligible
+        # Ricalcola i KPI Tassonomia solo se la tabella (dopo eventuali cancellazioni) non è vuota
+        if not edited_df.empty:
+            capex_tot_sistema = st.session_state.capex_totale
+            capex_eligible = edited_df["CapEx (€)"].sum()
+            capex_aligned = edited_df[edited_df["Allineato"] == "Sì"]["CapEx (€)"].sum()
             
-        capex_non_eligible = capex_tot_sistema - capex_eligible
-        capex_eligible_not_aligned = capex_eligible - capex_aligned
-        
-        # 1. Grafico a Torta Globale
-        labels_pie = ["Allineato (Aligned)", "Ammissibile ma NON Allineato", "Non Ammissibile (Non-Eligible)"]
-        values_pie = [capex_aligned, capex_eligible_not_aligned, capex_non_eligible]
-        colors_pie = ['#00B050', '#FECB52', '#C00000']
-        
-        fig_pie_tax = go.Figure(data=[go.Pie(labels=labels_pie, values=values_pie, hole=.4, marker_colors=colors_pie)])
-        fig_pie_tax.update_layout(title_text="Suddivisione CapEx Tassonomia UE (Articolo 8)", margin=dict(t=40, b=0, l=0, r=0))
-        
-        # 2. Grafico a Barre per Attività
-        fig_bar_tax = px.bar(df_tax, x="Attività", y="CapEx (€)", color="Allineato", 
-                             color_discrete_map={"Sì": "#00B050", "No": "#FECB52"},
-                             title="Spaccato CapEx Ammissibile per Attività")
-        
-        # Layout Visuale
-        c_kpi1, c_kpi2 = st.columns([1, 1.5])
-        with c_kpi1:
-            st.metric("CapEx Totale Esaminato", f"€ {capex_tot_sistema:,.0f}")
-            st.metric("% CapEx ALLINEATO (Green Asset Ratio)", f"{(capex_aligned/capex_tot_sistema*100) if capex_tot_sistema>0 else 0:.1f} %")
-            st.metric("% CapEx AMMISSIBILE (Totale)", f"{(capex_eligible/capex_tot_sistema*100) if capex_tot_sistema>0 else 0:.1f} %")
-            st.metric("CapEx Non Ammissibile", f"€ {capex_non_eligible:,.0f}")
-        with c_kpi2:
-            st.plotly_chart(fig_pie_tax, use_container_width=True)
+            if capex_eligible > capex_tot_sistema:
+                st.warning("Il totale delle attività supera il CapEx di sistema. Il CapEx totale è stato ricalibrato in automatico per questa vista.")
+                capex_tot_sistema = capex_eligible
+                
+            capex_non_eligible = capex_tot_sistema - capex_eligible
+            capex_eligible_not_aligned = capex_eligible - capex_aligned
             
-        st.plotly_chart(fig_bar_tax, use_container_width=True)
+            labels_pie = ["Allineato (Aligned)", "Ammissibile ma NON Allineato", "Non Ammissibile (Non-Eligible)"]
+            values_pie = [capex_aligned, capex_eligible_not_aligned, capex_non_eligible]
+            colors_pie = ['#00B050', '#FECB52', '#C00000']
+            
+            fig_pie_tax = go.Figure(data=[go.Pie(labels=labels_pie, values=values_pie, hole=.4, marker_colors=colors_pie)])
+            fig_pie_tax.update_layout(title_text="Suddivisione CapEx Tassonomia UE (Articolo 8)", margin=dict(t=40, b=0, l=0, r=0))
+            
+            fig_bar_tax = px.bar(edited_df, x="Attività", y="CapEx (€)", color="Allineato", 
+                                 color_discrete_map={"Sì": "#00B050", "No": "#FECB52"},
+                                 title="Spaccato CapEx Ammissibile per Attività")
+            
+            c_kpi1, c_kpi2 = st.columns([1, 1.5])
+            with c_kpi1:
+                st.metric("CapEx Totale Esaminato", f"€ {capex_tot_sistema:,.0f}")
+                st.metric("% CapEx ALLINEATO (Green Asset Ratio)", f"{(capex_aligned/capex_tot_sistema*100) if capex_tot_sistema>0 else 0:.1f} %")
+                st.metric("% CapEx AMMISSIBILE (Totale)", f"{(capex_eligible/capex_tot_sistema*100) if capex_tot_sistema>0 else 0:.1f} %")
+                st.metric("CapEx Non Ammissibile", f"€ {capex_non_eligible:,.0f}")
+            with c_kpi2:
+                st.plotly_chart(fig_pie_tax, use_container_width=True)
+                
+            st.plotly_chart(fig_bar_tax, use_container_width=True)
             
     else:
         st.info("Inizia ad aggiungere attività tramite il menu a tendina qui sopra per generare i KPI, le % di allineamento e i grafici a torta e a barre di scomposizione.")
