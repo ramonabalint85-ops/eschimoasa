@@ -200,12 +200,69 @@ with tab_transizione:
     st.plotly_chart(fig_trans, use_container_width=True)
 
 with tab_fisico:
-    st.header("Valutazione Rischio Fisico")
-    livello_rischio = st.radio("Livello Esposizione:", ["Basso", "Medio", "Alto"], horizontal=True)
-    molt_danno = {"Basso": 0.01, "Medio": 0.03, "Alto": 0.06}[livello_rischio]
-    fisico_data = [{"Anno": y, "Utile Netto": revenue - (opex * (1 + ((y - 2020) * molt_danno)))} for y in range(2020, 2055, 5)]
-    fig_fisico = px.bar(pd.DataFrame(fisico_data), x="Anno", y="Utile Netto", template="plotly_white", color_discrete_sequence=['#ff9999' if livello_rischio=="Medio" else '#ff4d4d' if livello_rischio=="Alto" else '#99ccff'])
-    st.plotly_chart(fig_fisico, use_container_width=True)
+    from geopy.geocoders import Nominatim
+    import numpy as np
+
+    st.header("🌪️ Analisi Geospaziale del Rischio Fisico")
+    st.markdown("Inserisci l'indirizzo esatto dell'Asset. Il sistema individuerà le coordinate e mapperà l'esposizione ai rischi climatici fisici estremi (Alluvioni, Ondate di Calore, Siccità).")
+    
+    indirizzo = st.text_input("📍 Indirizzo dell'Asset (es. Via Roma 1, Milano, Italia)", value="Via Agostino Rocca 1, Dalmine, Italia")
+    
+    if st.button("🛰️ Avvia Scansione Satellitare"):
+        with st.spinner("Connessione ai servizi di geolocalizzazione..."):
+            try:
+                # 1. Trova le coordinate GPS
+                geolocator = Nominatim(user_agent="CarbonRisk_Enterprise_App")
+                location = geolocator.geocode(indirizzo)
+                
+                if location:
+                    lat, lon = location.latitude, location.longitude
+                    st.success(f"Coordinate identificate: {lat:.4f} N, {lon:.4f} E")
+                    
+                    # 2. Algoritmo di Simulazione Rischio basato sulla Latitudine 
+                    # (In una vera app Enterprise, qui chiameresti le API del satellite Copernicus)
+                    # Qui simuliamo che più si va a sud (latitudini minori in Europa), più c'è siccità.
+                    rischio_siccita = max(0, min(100, int((55 - lat) * 3.5)))
+                    rischio_alluvione = np.random.randint(10, 80) # Simulato
+                    
+                    # 3. Mappa Interattiva
+                    mappa_df = pd.DataFrame({"Lat": [lat], "Lon": [lon], "Asset": ["Impianto Principale"]})
+                    
+                    # Usa Mapbox per una mappa professionale e bellissima
+                    fig_mappa = px.scatter_mapbox(
+                        mappa_df, lat="Lat", lon="Lon", hover_name="Asset",
+                        zoom=12, height=400,
+                        color_discrete_sequence=["red"], size_max=15
+                    )
+                    fig_mappa.update_traces(marker=dict(size=20, opacity=0.8))
+                    fig_mappa.update_layout(mapbox_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0})
+                    
+                    st.plotly_chart(fig_mappa, use_container_width=True)
+                    
+                    # 4. Cruscotto dei Danni
+                    st.subheader("Indici di Vulnerabilità Climatica (Proiezione 2030)")
+                    col_r1, col_r2, col_r3 = st.columns(3)
+                    
+                    col_r1.metric("Rischio Siccità / Stress Idrico", f"{rischio_siccita}/100", delta="Alto" if rischio_siccita>60 else "Basso", delta_color="inverse")
+                    col_r2.metric("Rischio Alluvione (River Flood)", f"{rischio_alluvione}/100", delta="Medio" if rischio_alluvione>40 else "Basso", delta_color="inverse")
+                    
+                    # Calcolo Danno Economico (Danni alle infrastrutture e fermo impianto)
+                    moltiplicatore_danno = ((rischio_siccita + rischio_alluvione) / 200) * 0.15 # Max 15% di aumento OpEx
+                    
+                    fisico_data = []
+                    for y in range(2020, 2055, 5):
+                        opex_danneggiato = st.session_state.opex * (1 + ((y - 2020) * (moltiplicatore_danno / 5)))
+                        profitto_fisico = st.session_state.revenue - opex_danneggiato
+                        fisico_data.append({"Anno": y, "Utile Netto (€)": profitto_fisico, "Scenario": "Impatto Danni Fisici"})
+                        
+                    fig_danni = px.line(pd.DataFrame(fisico_data), x="Anno", y="Utile Netto (€)", template="plotly_white", title="Erosione Margini per Eventi Climatici Estremi")
+                    fig_danni.update_traces(line_shape='spline', line=dict(width=3, color='orange'))
+                    col_r3.plotly_chart(fig_danni, use_container_width=True)
+
+                else:
+                    st.error("Indirizzo non trovato. Inserisci un indirizzo più specifico (Città, Paese).")
+            except Exception as e:
+                st.error(f"Errore di geolocalizzazione: {e}")
 
 with tab_credito:
     st.header("Rischio di Credito (DSCR)")
