@@ -70,48 +70,68 @@ def get_nace_section(d_code):
 
 @st.cache_data
 def load_nace_hierarchy(file_content_or_path="NACE_Rev.2.1.rdf"):
-    """Versione robusta a prova di eccezioni e namespace XML"""
+    """Versione robusta con aggregazione multi-blocco XML"""
+    import xml.etree.ElementTree as ET
+    import io
+
     try:
-        # Se passiamo un file caricato manualmente dall'utente
+        # 1. Caricamento del file
         if hasattr(file_content_or_path, 'getvalue'):
             tree = ET.parse(io.BytesIO(file_content_or_path.getvalue()))
         else:
-            # Se leggiamo il file dalla cartella GitHub
             if not os.path.exists(file_content_or_path):
-                return None # Segnala alla UI che il file manca
+                return None 
             tree = ET.parse(file_content_or_path)
             
         root = tree.getroot()
-        sections, divisions, groups, classes = {}, {}, {}, {}
         
-        # Gestione sicura dei namespace universali
         rdf_ns = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
         skos_ns = 'http://www.w3.org/2004/02/skos/core#'
         xml_ns = 'http://www.w3.org/XML/1998/namespace'
+        
+        # 2. FASE 1: Collezioniamo tutte le etichette unificando i blocchi XML sparsi
+        labels_by_lang = {}
         
         for desc in root.findall(f'.//{{{rdf_ns}}}Description'):
             about = desc.attrib.get(f'{{{rdf_ns}}}about', '')
             code = about.split('/')[-1]
             
+            # Escludiamo configurazioni di sistema e mappature
             if not code or 'NACE2' in about or 'SPACE' in about or 'MIG' in about: continue
             if code in ['sections', 'divisions', 'groups', 'classes', 'nace2.1']: continue
+            
+            if code not in labels_by_lang:
+                labels_by_lang[code] = {}
                 
-            label = code
+            # Estraiamo i nomi e li salviamo per lingua
             for l in desc.findall(f'.//{{{skos_ns}}}prefLabel'):
                 lang = l.attrib.get(f'{{{xml_ns}}}lang')
-                if lang == 'it': 
-                    label = l.text
-                    break
-                elif lang == 'en': 
-                    label = l.text
-            
-            # Regole NACE europee
-            if code.isalpha() and len(code) == 1: sections[code] = {'label': f"{code} - {label}", 'children': {}}
-            elif code.isdigit() and len(code) == 2: divisions[code] = {'label': f"{code} - {label}", 'children': {}}
-            elif len(code) == 3 and code.isdigit(): groups[code] = {'label': f"{code[:2]}.{code[2:]} - {label}", 'children': {}}
-            elif len(code) == 4 and code.isdigit(): classes[code] = {'label': f"{code[:2]}.{code[2:]} - {label}", 'code': f"{code[:2]}.{code[2:]}"}
+                if lang in ['it', 'en'] and l.text:
+                    labels_by_lang[code][lang] = l.text
 
-        # Costruisco l'albero relazionale
+        # 3. FASE 2: Creiamo le strutture applicando i nomi definitivi
+        sections, divisions, groups, classes = {}, {}, {}, {}
+        
+        for code, langs in labels_by_lang.items():
+            # Priorità: Italiano -> Inglese -> Codice grezzo se manca tutto
+            label = langs.get('it', langs.get('en', code)) 
+            
+            if code.isalpha() and len(code) == 1: 
+                display_label = f"{code} - {label}" if not label.startswith(code) else label
+                sections[code] = {'label': display_label, 'children': {}}
+            elif code.isdigit() and len(code) == 2: 
+                display_label = f"{code} - {label}" if not label.startswith(code) else label
+                divisions[code] = {'label': display_label, 'children': {}}
+            elif len(code) == 3 and code.isdigit(): 
+                fmt_code = f"{code[:2]}.{code[2:]}"
+                display_label = f"{fmt_code} - {label}" if not label.startswith(fmt_code) else label
+                groups[code] = {'label': display_label, 'children': {}}
+            elif len(code) == 4 and code.isdigit(): 
+                fmt_code = f"{code[:2]}.{code[2:]}"
+                display_label = f"{fmt_code} - {label}" if not label.startswith(fmt_code) else label
+                classes[code] = {'label': display_label, 'code': fmt_code}
+
+        # 4. Costruisco l'albero relazionale parent-child
         for d_code, d_data in divisions.items():
             s_code = get_nace_section(d_code)
             if s_code in sections: sections[s_code]['children'][d_code] = d_data
@@ -124,7 +144,7 @@ def load_nace_hierarchy(file_content_or_path="NACE_Rev.2.1.rdf"):
             g_code = c_code[:3]
             if g_code in groups: groups[g_code]['children'][c_code] = c_data
                 
-        # Pulizia dizionario per l'interfaccia UI
+        # 5. Pulizia del dizionario finale per darlo in pasto alle dropdown della UI
         ui_db = {}
         for s_code in sorted(sections.keys()):
             s_data = sections[s_code]
@@ -145,7 +165,6 @@ def load_nace_hierarchy(file_content_or_path="NACE_Rev.2.1.rdf"):
         return ui_db
     except Exception as e:
         return {"ERRORE DI LETTURA XML": {str(e): {"-": {"-": ""}}}}
-
 @st.cache_data
 def generate_offline_data():
     data = []
