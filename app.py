@@ -187,7 +187,7 @@ with t_rischi:
                 except:
                     st.error("Errore di geolocalizzazione.")
 
-    # 2B. RISCHIO DI TRANSIZIONE (GHG & CapEx)
+    # 2B. RISCHIO DI TRANSIZIONE
     with rt_transizione:
         st.subheader("1. Protocollo GHG (Inventario Emissioni)")
         c_ghg1, c_ghg2 = st.columns(2)
@@ -208,7 +208,7 @@ with t_rischi:
         st.slider("Efficacia attesa (Riduzione Stimata %)", 0, 100, key='perc_red', on_change=sync_from_perc)
         st.success(f"**Risultato Atteso:** Le emissioni nette finali (Hard-to-abate) scenderanno a **{st.session_state.em_final:,} tCO2**.")
 
-    # 2C. RISCHIO CREDITO & CARBON OFFSETTING
+    # 2C. RISCHIO CREDITO E OFFSETTING
     with rt_credito:
         st.subheader("1. Stress Test Finanziario & Condizioni di Credito")
         c_cred1, c_cred2, c_cred3 = st.columns(3)
@@ -216,7 +216,6 @@ with t_rischi:
         c_cred2.number_input("Ammortamenti Annuali (€)", value=st.session_state.ammortamenti, step=500_000, key='ammortamenti')
         c_cred3.slider("Severità Leggi Locali (Moltiplicatore CO2)", 1.0, 3.0, value=st.session_state.policy_multiplier, step=0.1, key='policy_multiplier')
 
-        # Dati Grafici Dinamici
         country_data = df_base[df_base['Paese'] == st.session_state.selected_country].copy()
         plot_data = []
         emissions_tot = get_tot_emissions()
@@ -228,7 +227,6 @@ with t_rischi:
         color_map = {'Net Zero 2050 (Ordinata)': '#EF553B', 'Transizione Ritardata (Shock)': '#FECB52', 'Politiche Attuali (BAU)': '#00CC96'}
 
         cg1, cg2 = st.columns(2)
-        # Legende Spostate in basso
         fig_prezzo = px.line(plot_df, x="Anno", y="Prezzo Carbonio (€/t)", color="Scenario", color_discrete_map=color_map, title="Evoluzione Prezzo Carbonio")
         fig_prezzo.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
         cg1.plotly_chart(fig_prezzo, use_container_width=True)
@@ -239,10 +237,7 @@ with t_rischi:
 
         st.divider()
 
-        # NUOVO BLOCCO: Prima vs Dopo la transizione
         st.subheader("2. Analisi d'Impatto: Prima e Dopo la Transizione (Simulazione 2030)")
-        st.markdown("Confronto visivo tra lo scenario senza interventi (tasse elevate) e lo scenario con CapEx (tasse ridotte, inclusa rata prestito).")
-        
         prezzo_rif = 70.0 * st.session_state.policy_multiplier
         tasse_prima = emissions_tot * prezzo_rif
         costi_prima = st.session_state.opex + tasse_prima
@@ -253,7 +248,6 @@ with t_rischi:
         utile_dopo = st.session_state.revenue - costi_dopo
         
         col_bar1, col_bar2 = st.columns(2)
-        
         with col_bar1:
             fig_prima = go.Figure(data=[
                 go.Bar(name='Ricavi', x=[''], y=[st.session_state.revenue], offsetgroup=0, marker_color='#0070C0'),
@@ -275,29 +269,115 @@ with t_rischi:
         st.divider()
 
         st.subheader("3. Carbon Offsetting (Crediti VERs)")
-        st.markdown(f"Per neutralizzare le **{st.session_state.em_final:,} tCO2** residue calcolate nella fase di transizione.")
         prezzo_ver = st.number_input("Prezzo Mercato Volontario (€/tCO2)", value=15)
         costo_offsetting = st.session_state.em_final * prezzo_ver
         st.metric("Costo Annuale per raggiungere 'Net Zero'", f"€ {costo_offsetting:,.0f}")
 
-# --- TAB 3: TASSONOMIA UE ---
+# --- TAB 3: TASSONOMIA UE (AGGIORNATO) ---
 with t_tax:
-    st.header("Allineamento Tassonomia UE")
-    settore = st.selectbox("Settore Economico NACE", ["Real Estate (Immobiliare)", "Trasporti e Logistica", "Agricoltura e Allevamento", "Chimica (Ammoniaca/Plastica)", "Generazione Elettrica", "Produzione Cemento", "Produzione Acciaio"])
+    st.header("🇪🇺 Allineamento Tassonomia UE (EU Taxonomy Compass)")
+    st.markdown("Valuta l'allineamento delle tue attività economiche ai Criteri di Vaglio Tecnico (TSC) della Tassonomia Europea. Scegli prima il macro-settore e poi l'attività specifica.")
+
+    # Struttura Dati a Cascata (Settori -> Attività Specifiche)
+    tassonomia_db = {
+        "Agricoltura, silvicoltura e pesca": [
+            "Coltivazione di colture perenni/non perenni",
+            "Allevamento di bestiame",
+            "Silvicoltura e gestione forestale"
+        ],
+        "Attività manifatturiere": [
+            "Fabbricazione di cemento",
+            "Fabbricazione di alluminio",
+            "Fabbricazione di ferro e acciaio",
+            "Fabbricazione di prodotti chimici",
+            "Fabbricazione di batterie",
+            "Fabbricazione di tecnologie per l'efficienza energetica"
+        ],
+        "Fornitura di energia (Elettricità, Gas, Vapore)": [
+            "Produzione di energia solare fotovoltaica",
+            "Produzione di energia eolica",
+            "Produzione di energia idroelettrica",
+            "Trasmissione e distribuzione di energia elettrica",
+            "Cogenerazione ad alto rendimento"
+        ],
+        "Acqua, Rifiuti e Risanamento": [
+            "Gestione e distribuzione dell'acqua",
+            "Trattamento delle acque reflue",
+            "Recupero di materiali da rifiuti non pericolosi (Economia Circolare)"
+        ],
+        "Trasporto e magazzinaggio": [
+            "Trasporto passeggeri su strada interurbano",
+            "Trasporto merci su strada",
+            "Infrastrutture per la mobilità a zero emissioni",
+            "Trasporto marittimo, costiero e fluviale"
+        ],
+        "Costruzioni e attività immobiliari": [
+            "Costruzione di nuovi edifici",
+            "Ristrutturazione di edifici esistenti",
+            "Installazione e manutenzione di tecnologie per l'efficienza energetica",
+            "Acquisto e proprietà di edifici (Real Estate)"
+        ],
+        "Informazione e comunicazione (ICT)": [
+            "Elaborazione dei dati, hosting e attività connesse (Data Center)",
+            "Soluzioni basate sui dati per la riduzione delle emissioni (Software)"
+        ]
+    }
+
+    col_tax1, col_tax2 = st.columns(2)
+
+    with col_tax1:
+        st.subheader("1. Classificazione dell'Attività")
+        # Il primo selettore estrae le chiavi del dizionario
+        settore = st.selectbox("Macro-Settore Economico (NACE)", list(tassonomia_db.keys()))
+        # Il secondo selettore mostra solo gli elementi associati al settore scelto
+        attivita = st.selectbox("Attività Economica Specifica", tassonomia_db[settore])
+
+    # Assegnazione dinamica di metriche, unità e soglie in base all'attività scelta
+    attivita_lower = attivita.lower()
+    settore_lower = settore.lower()
     
-    if settore == "Real Estate (Immobiliare)": unita, soglia, target_unit = "Metri Quadri (m2)", 80, "kWh/m2"
-    elif settore == "Trasporti e Logistica": unita, soglia, target_unit = "Tonnellate per km (tkm)", 50, "gCO2/tkm"
-    elif settore == "Agricoltura e Allevamento": unita, soglia, target_unit = "Ettari Coltivati", 2.5, "tCO2eq/Ettaro (Inc. CH4)"
-    elif settore == "Chimica (Ammoniaca/Plastica)": unita, soglia, target_unit = "Tonnellate", 1.0, "tCO2/ton"
-    elif settore == "Generazione Elettrica": unita, soglia, target_unit = "MWh", 100, "gCO2/kWh"
-    else: unita, soglia, target_unit = "Tonnellate", 0.7, "tCO2/ton"
-    
-    prod = st.number_input(f"Produzione/Volume Totale ({unita})", value=100000, step=10000)
-    int_calc = (get_tot_emissions() / prod) if prod > 0 else 0
-    if target_unit.startswith("g"): int_calc *= 1000 
-    
-    is_aligned = int_calc <= soglia
-    st.metric(f"Intensità Calcolata ({target_unit})", f"{int_calc:.2f}", delta="ALLINEATO AI CRITERI UE" if is_aligned else "NON ALLINEATO", delta_color="normal" if is_aligned else "inverse")
+    if "edifici" in attivita_lower or "real estate" in attivita_lower:
+        unita, soglia, target_unit = "Metri Quadri Gestiti (m2)", 80.0, "kWh/m2 (Classe A)"
+    elif "trasporto" in attivita_lower or "mobilità" in attivita_lower:
+        unita, soglia, target_unit = "Tonnellate per km (tkm)", 50.0, "gCO2/tkm"
+    elif "agricoltura" in settore_lower or "silvicoltura" in attivita_lower or "allevamento" in attivita_lower:
+        unita, soglia, target_unit = "Ettari Coltivati/Gestiti", 2.5, "tCO2eq/Ettaro"
+    elif "cemento" in attivita_lower:
+        unita, soglia, target_unit = "Tonnellate prodotte", 0.72, "tCO2/ton"
+    elif "acciaio" in attivita_lower or "alluminio" in attivita_lower:
+        unita, soglia, target_unit = "Tonnellate prodotte", 1.3, "tCO2/ton"
+    elif "energia" in settore_lower:
+        unita, soglia, target_unit = "MWh Erogati", 100.0, "gCO2/kWh"
+    elif "data center" in attivita_lower:
+        unita, soglia, target_unit = "Terabyte Gestiti (TB)", 1.2, "PUE (Power Usage Effectiveness)"
+    else:
+        unita, soglia, target_unit = "Unità Prodotte/Gestite", 1.0, "tCO2/unità"
+
+    with col_tax2:
+        st.subheader("2. Parametri (Mitigazione Climatica)")
+        st.markdown(f"**Soglia di Allineamento UE:** `<= {soglia} {target_unit}`")
+        prod = st.number_input(f"Volume Annuo di Produzione/Gestione ({unita})", value=100000, step=10000)
+
+        # Calcolo intensità
+        int_calc = (get_tot_emissions() / prod) if prod > 0 else 0
+
+        # Aggiustamenti specifici per unità di misura
+        if target_unit.startswith("g"):
+            int_calc *= 1000 # Convertiamo da tonnellate a grammi per MWh/kWh
+        elif "PUE" in target_unit:
+            int_calc = 1.0 + (get_tot_emissions() / 1000000) # Simulazione punteggio PUE Data Center
+
+        is_aligned = int_calc <= soglia
+
+        st.metric(
+            "Intensità Attuale Calcolata", 
+            f"{int_calc:.2f} {target_unit.split(' ')[0]}", 
+            delta="ALLINEATO ALLA TASSONOMIA UE" if is_aligned else "NON ALLINEATO", 
+            delta_color="normal" if is_aligned else "inverse"
+        )
+        
+    st.divider()
+    st.info("💡 **Nota Normativa:** I valori di soglia mostrati sono basati sui Criteri di Vaglio Tecnico (TSC) ufficiali. Per l'allineamento finale, l'attività deve anche superare i test DNSH (*Do No Significant Harm*) agli altri obiettivi ambientali e rispettare le Garanzie Minime Sociali (Diritti Umani e Lavoro).")
 
 # --- TAB 4: CBAM E SUPPLY CHAIN ---
 with t_cbam:
@@ -341,27 +421,11 @@ with t_cbam:
         (st.session_state.revenue - st.session_state.opex - costo_netto_cbam)
     ]
     
-    # MODIFICA FONT SANKEY: Reso nero, più grande e visibile
     fig_sankey = go.Figure(data=[go.Sankey(
-        node=dict(
-            pad=15, 
-            thickness=20, 
-            line=dict(color="black", width=0.5), 
-            label=labels, 
-            color="#2E86AB"
-        ), 
-        link=dict(
-            source=source, 
-            target=target, 
-            value=value, 
-            color="#EAEAEA"
-        )
+        node=dict(pad=15, thickness=20, line=dict(color="black", width=0.5), label=labels, color="#2E86AB"), 
+        link=dict(source=source, target=target, value=value, color="#EAEAEA")
     )])
-    fig_sankey.update_layout(
-        height=450, 
-        margin=dict(l=0, r=0, t=30, b=0),
-        font=dict(size=14, color="black", family="Arial, sans-serif") # Impostazione Font ben visibile
-    )
+    fig_sankey.update_layout(height=450, margin=dict(l=0, r=0, t=30, b=0), font=dict(size=14, color="black", family="Arial, sans-serif"))
     st.plotly_chart(fig_sankey, use_container_width=True)
 
 # --- TAB 5: DOWNLOAD ---
