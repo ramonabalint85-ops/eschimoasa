@@ -37,6 +37,7 @@ def sync_from_perc(): st.session_state.em_final = int(get_tot_emissions() * (1 -
 def sync_from_scopes(): sync_from_perc()
 
 # --- MOTORE DATI, NACE E EU TAXONOMY JSON ---
+
 def get_nace_section(d_code):
     try:
         d = int(d_code)
@@ -187,22 +188,32 @@ def generate_offline_data():
 
 df_base = generate_offline_data()
 
+# --- NUOVO CARICATORE CN CODES ---
 @st.cache_data
-def load_cn_codes():
+def load_cn_codes(file_path="cn_codes_clean.csv"):
     try:
-        df_cn = pd.read_csv("CBAM Self Assessment Tool Version 1.1.xlsx - CN Codes.csv")
-        df_cn['CN Code'] = df_cn['CN Code'].astype(str).str.zfill(8)
+        # Legge il file CSV leggero che hai generato in Colab
+        df_cn = pd.read_csv(file_path)
+        # Si assicura che il codice sia una stringa di 8 caratteri (es. 01010000)
+        df_cn['CN_Code'] = df_cn['CN_Code'].astype(str).str.zfill(8)
         return df_cn
-    except:
-        data = {
-            'Main Category': ['Cement', 'Cement', 'Cement', 'Fertilizers', 'Fertilizers', 'Iron and Steel', 'Iron and Steel', 'Iron and Steel', 'Aluminium', 'Aluminium', 'Hydrogen', 'Electricity', 'Other'],
-            'CN Code': ['25070080', '25231000', '25232100', '31021010', '28141000', '72000000', '72011011', '73041100', '76010000', '76041010', '28041000', '27160000', '99999999'],
-            'Goods concerned': ['Other kaolinic clays', 'Cement clinkers', 'White Portland cement', 'Urea', 'Anhydrous ammonia', 'Iron and steel products', 'Non-alloy pig iron', 'Tubes and pipes of iron/steel', 'Unwrought aluminium', 'Aluminium bars, rods and profiles', 'Hydrogen', 'Electrical energy', 'Altre merci NON soggette a CBAM'],
-            'CBAM Applies': ['Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'Yes', 'No']
-        }
-        return pd.DataFrame(data)
+    except Exception as e:
+        # Fallback di emergenza
+        return pd.DataFrame({"CN_Code": ["25231000"], "Description": ["Cement clinkers (Manca il file cn_codes_clean.csv)"]})
 
 df_cn_database = load_cn_codes()
+
+# FUNZIONE LOGICA ANNEX I CBAM (Radar Doganale)
+def check_cbam_category(cn_code):
+    cn = str(cn_code).strip()
+    if cn.startswith(('25070080', '2523')): return "Cemento"
+    if cn == '27160000': return "Elettricità"
+    if cn == '28041000': return "Idrogeno"
+    if cn.startswith(('2808', '2814', '28342100', '3102', '3105')): return "Fertilizzanti"
+    if cn.startswith(('72', '7301', '7302', '7303', '7304', '7305', '7306', '7307', '7308', '7309', '7310', '7311', '7318', '7326')): return "Ferro e Acciaio"
+    if cn.startswith(('7601', '7603', '7604', '7605', '7606', '7607', '7608', '7609')): return "Alluminio"
+    return "Non Soggetto"
+
 
 # --- SIDEBAR: ESTRAZIONE E INSERIMENTO ---
 with st.sidebar:
@@ -294,7 +305,7 @@ st.title("🌍 Piattaforma CarbonRisk AI")
 st.markdown("Seleziona una delle schede qui sotto per procedere con l'analisi strategica.")
 
 t_home, t_rischi, t_tax, t_cbam, t_down = st.tabs([
-    "🏠 Home", "📊 Analisi Rischi", "🇪🇺 Tassonomia UE (Completa)", "🌍 CBAM (Self-Assessment)", "📥 Download Ufficiali"
+    "🏠 Home", "📊 Analisi Rischi", "🇪🇺 Tassonomia UE", "🌍 CBAM (Dogana Smart)", "📥 Download Ufficiali"
 ])
 
 # --- TAB 1: HOME ---
@@ -397,7 +408,6 @@ with t_tax:
     st.header("🇪🇺 Reporting Tassonomia UE (Modello Completo)")
     st.markdown("Valuta l'ammissibilità tramite i codici NACE. Per ogni attività, specifica l'obiettivo ambientale primario e inserisci i 3 KPI chiave (Turnover, CapEx, OpEx). Le attività non ammissibili alimenteranno comunque i denominatori per calcolare l'esatta percentuale aziendale.")
     
-    # 1. Caricamento Dati
     nace_db = load_nace_hierarchy("NACE_Rev.2.1.rdf")
     taxonomy_prefixes = load_taxonomy_json("taxonomy.json")
     
@@ -425,7 +435,6 @@ with t_tax:
             nace_code = nace_db[settore][divisione][gruppo][classe] if classe else ""
             attivita = classe.split(" - ", 1)[-1] if classe else ""
             
-            # --- INCROCIO DATI: ELIGIBILITY AUTOMATICA ---
             user_nace_clean = nace_code.replace('.', '') if nace_code else ""
             is_eligible = False
             
@@ -458,7 +467,6 @@ with t_tax:
 
         st.divider()
 
-        # Logica euristica per i test tecnici
         attivita_lower = attivita.lower()
         if "edifici" in attivita_lower or "costruzione" in attivita_lower: unita, soglia, target_unit = "m2 Gestiti", 80.0, "kWh/m2"
         elif "trasporto" in attivita_lower or "veicoli" in attivita_lower: unita, soglia, target_unit = "tkm", 50.0, "gCO2/tkm"
@@ -549,7 +557,6 @@ with t_tax:
             key="tax_editor"
         )
         
-        # L'allineamento richiede che sia ammissibile e superi tutti i 3 test documentali
         edited_df["Aligned"] = (edited_df["Eligible (Y/N)"] == "Y") & (edited_df["TSC Passed"] == "Y") & (edited_df["DNSH"] == "Y") & (edited_df["Safeguards"] == "Y")
         st.session_state.tax_portfolio = edited_df.drop(columns=["Aligned"]).to_dict('records')
         
@@ -560,13 +567,11 @@ with t_tax:
         st.divider()
         st.subheader("📊 Dashboard Risultati Tassonomia")
 
-        # Generazione delle 3 schede KPI come richiesto dalla normativa
         tab_turnover, tab_capex, tab_opex = st.tabs(["💶 Turnover (Ricavi)", "🏗️ CapEx (Investimenti)", "⚙️ OpEx (Costi Operativi)"])
         
         def render_kpi_tab(kpi_name, df, company_baseline):
             col_name = f"{kpi_name} (€)"
             tot_entered = df[col_name].sum()
-            # Il denominatore è il valore più alto tra i dati di base aziendali (inseriti a sinistra) e la somma delle attività registrate
             denominator = max(company_baseline, tot_entered)
             
             val_eligible = df[df["Eligible (Y/N)"] == "Y"][col_name].sum()
@@ -599,8 +604,8 @@ with t_tax:
 
 # --- TAB 4: CBAM SELF-ASSESSMENT TOOL CON SEARCH BAR ---
 with t_cbam:
-    st.header("🌍 CBAM Self-Assessment Tool (Basato su Codici CN)")
-    st.markdown("Inizia a digitare il **Codice CN (Nomenclatura Combinata a 8 cifre)** o la descrizione della merce. Il sistema autocompleterà la ricerca e incrocerà i dati col database UE per determinare l'applicabilità di Annex I.")
+    st.header("🌍 CBAM Self-Assessment Tool (Ricerca Intelligente)")
+    st.markdown("Cerca l'intera Nomenclatura Combinata Europea (oltre 10.000 codici). Il sistema ti avviserà in automatico se la merce ricercata fa parte dell'**Allegato I (Annex I) soggetto a CBAM** (es. Cemento, Acciaio, Fertilizzanti, Alluminio, Elettricità, Idrogeno).")
     
     paesi_origine = {
         "Cina (China National ETS)": {"Tax": 10.0, "Exempt": False},
@@ -613,17 +618,30 @@ with t_cbam:
         "Unione Europea (Produzione Interna)": {"Tax": 0.0, "Exempt": True}
     }
 
-    cn_options = df_cn_database.apply(lambda row: f"{row['CN Code']} - {row['Goods concerned']} ({row['Main Category']})", axis=1).tolist()
+    # Ottimizzazione stringhe di ricerca
+    cn_options = df_cn_database.apply(lambda row: f"{row['CN_Code']} - {row['Description']}", axis=1).tolist()
 
     with st.expander("➕ Compila Nuova Spedizione Doganale", expanded=True):
         col_cb1, col_cb2 = st.columns(2)
         
         with col_cb1:
-            merce_selezionata = st.selectbox("🔍 Cerca Codice CN o Descrizione Merce", options=cn_options, index=None)
+            merce_selezionata = st.selectbox("🔍 Cerca Codice CN o Descrizione Merce (Digita per filtrare...)", options=cn_options, index=None, placeholder="Es. 72000000 oppure Acciaio...")
+            
+            # --- LOGICA RADAR DOGANALE CBAM ---
+            is_annex_i = "No"
             if merce_selezionata:
                 codice_cn_estratto = merce_selezionata.split(" - ")[0]
-                dati_merce = df_cn_database[df_cn_database['CN Code'] == codice_cn_estratto].iloc[0]
-                st.success(f"**Categoria rilevata:** {dati_merce['Main Category']}")
+                descrizione_merce = merce_selezionata.split(" - ", 1)[1]
+                
+                categoria_cbam = check_cbam_category(codice_cn_estratto)
+                
+                if categoria_cbam != "Non Soggetto":
+                    st.error(f"⚠️ **ATTENZIONE: Merce soggetta a CBAM** (Categoria: {categoria_cbam})")
+                    is_annex_i = "Yes"
+                else:
+                    st.success("✅ **Merce NON soggetta a CBAM** (Esente Annex I)")
+                    is_annex_i = "No"
+                    
             emissioni_merce = st.number_input("Emissioni Incorporate Stimabili (tCO2)", min_value=0, value=0, step=100)
             
         with col_cb2:
@@ -633,25 +651,29 @@ with t_cbam:
 
         if st.button("Valuta Dogana e Registra"):
             if merce_selezionata and emissioni_merce >= 0:
-                is_annex_i = dati_merce['CBAM Applies'] 
                 is_3rd_country = "No" if paesi_origine[origine_merce]["Exempt"] else "Sì"
                 is_over_150 = "Sì" if valore_merce > 150.0 else "No"
                 is_free_circulation = "Sì" if importato_ue == "Sì" else "No"
+                
                 cbam_applies = (is_annex_i == "Yes") and (is_3rd_country == "Sì") and (is_over_150 == "Sì") and (is_free_circulation == "Sì")
 
                 st.session_state.cbam_portfolio.append({
                     "CN Code": codice_cn_estratto,
-                    "Descrizione": dati_merce['Goods concerned'],
-                    "Settore/Annex I": dati_merce['Main Category'],
+                    "Descrizione": descrizione_merce[:50] + "..." if len(descrizione_merce) > 50 else descrizione_merce,
+                    "Settore/Annex I": categoria_cbam,
                     "Origine": origine_merce,
                     "Valore (€)": valore_merce,
                     "Emissioni (tCO2)": emissioni_merce,
+                    "Test: Annex I?": is_annex_i,
+                    "Importato in UE": is_free_circulation,
                     "CBAM APPLICABILE": "SÌ" if cbam_applies else "NO",
                     "Tassa Estera": paesi_origine[origine_merce]["Tax"] if is_3rd_country == "Sì" else 0.0
                 })
                 st.success("Analisi doganale registrata con successo!")
                 time.sleep(0.5)
                 st.rerun()
+            else:
+                st.error("Devi cercare e selezionare una merce valida dal menù a tendina.")
 
     st.divider()
     st.subheader("📋 Registro Autovalutazione CBAM")
@@ -689,7 +711,7 @@ with t_cbam:
             fig_sankey.update_layout(height=450, margin=dict(l=0, r=0, t=30, b=0), font=dict(size=14, color="black", family="Arial, sans-serif"))
             st.plotly_chart(fig_sankey, use_container_width=True)
         else:
-            st.success("Nessuna merce richiede l'acquisto di certificati CBAM.")
+            st.success("Nessuna merce inserita richiede l'acquisto di certificati CBAM (nessun costo aggiuntivo).")
 
 # --- TAB 5: DOWNLOAD ---
 with t_down:
