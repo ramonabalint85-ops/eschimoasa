@@ -6,6 +6,10 @@ import yfinance as yf
 from fpdf import FPDF
 import time
 import numpy as np
+import PyPDF2
+import json
+from openai import OpenAI
+from geopy.geocoders import Nominatim
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="CarbonRisk AI Enterprise", layout="wide")
@@ -27,7 +31,7 @@ def sync_from_final():
     st.session_state.perc_red = max(0, min(100, int((1 - st.session_state.em_final / tot) * 100))) if tot > 0 else 0
 def sync_from_scopes(): sync_from_perc()
 
-# --- MOTORE DATI ---
+# --- MOTORE DATI (Simulazione Offline) ---
 @st.cache_data
 def generate_offline_data():
     data = []
@@ -47,18 +51,67 @@ df_base = generate_offline_data()
 # --- SIDEBAR: INTEGRAZIONI AI & API ---
 with st.sidebar:
     st.header("🤖 1. AI Data Extraction (OpenAI)")
+    
+    # Campo per la chiave API necessaria per fare la chiamata reale
+    api_key = st.text_input("Inserisci OpenAI API Key", type="password", help="Serve per leggere e analizzare il PDF.")
     uploaded_pdf = st.file_uploader("Carica Bilancio Sostenibilità (PDF)", type="pdf")
+    
     if uploaded_pdf:
         if st.button("Analizza con Intelligenza Artificiale"):
-            with st.spinner("L'AI sta leggendo le 200 pagine del documento..."):
-                time.sleep(2) # Simula API OpenAI
-                st.session_state.revenue = 120_000_000
-                st.session_state.opex = 85_000_000
-                st.session_state.scope1 = 45000
-                st.session_state.scope2 = 30000
-                st.session_state.scope3 = 110000
-                st.session_state.sbti_approved = True
-                st.success("Dati estratti e auto-compilati con successo!")
+            if not api_key:
+                st.error("Inserisci una chiave API valida per procedere.")
+            else:
+                with st.spinner("Estrazione testo dal PDF in corso..."):
+                    try:
+                        # 1. Estrazione del testo dal PDF
+                        pdf_reader = PyPDF2.PdfReader(uploaded_pdf)
+                        testo_estratto = ""
+                        # Leggiamo le prime 15 pagine per non superare i limiti di token
+                        for page in pdf_reader.pages[:15]:
+                            testo_estratto += page.extract_text() + "\n"
+                        
+                        st.info("Testo estratto! Analisi LLM in corso...")
+                        
+                        # 2. Chiamata reale a OpenAI
+                        client = OpenAI(api_key=api_key)
+                        prompt = f"""
+                        Agisci come un analista ESG esperto. Leggi il seguente estratto di un bilancio di sostenibilità/finanziario.
+                        Estrai i seguenti dati e restituiscili ESCLUSIVAMENTE come oggetto JSON puro, senza testo aggiuntivo o formattazione markdown:
+                        - "revenue": Ricavi o fatturato (in numero intero).
+                        - "opex": Costi operativi (in numero intero).
+                        - "scope1": Emissioni Scope 1 in tCO2 (numero intero).
+                        - "scope2": Emissioni Scope 2 in tCO2 (numero intero).
+                        - "scope3": Emissioni Scope 3 in tCO2 (numero intero).
+                        - "sbti_approved": true se il documento menziona target validati dalla Science Based Targets initiative (SBTi), altrimenti false.
+                        
+                        Se un dato non è presente, inserisci 0.
+                        
+                        Testo del documento:
+                        {testo_estratto[:15000]}
+                        """
+                        
+                        response = client.chat.completions.create(
+                            model="gpt-3.5-turbo-0125",
+                            messages=[{"role": "user", "content": prompt}],
+                            response_format={ "type": "json_object" }
+                        )
+                        
+                        # 3. Parsing del risultato e aggiornamento automatico
+                        dati_estratti = json.loads(response.choices[0].message.content)
+                        
+                        st.session_state.revenue = int(dati_estratti.get("revenue", 0))
+                        st.session_state.opex = int(dati_estratti.get("opex", 0))
+                        st.session_state.scope1 = int(dati_estratti.get("scope1", 0))
+                        st.session_state.scope2 = int(dati_estratti.get("scope2", 0))
+                        st.session_state.scope3 = int(dati_estratti.get("scope3", 0))
+                        st.session_state.sbti_approved = bool(dati_estratti.get("sbti_approved", False))
+                        
+                        st.success("Dati estratti e auto-compilati con successo!")
+                        time.sleep(1)
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"Errore durante l'elaborazione: {e}")
     
     st.header("📡 2. API Finanziarie & Registri")
     ticker = st.text_input("Ticker Yahoo Finance (es. ENEL.MI)")
@@ -92,7 +145,7 @@ with st.sidebar:
     ammortamenti = st.number_input("Ammortamenti (€)", value=4_000_000, step=500_000)
     policy_multiplier = st.slider("Severità Leggi Locali", 1.0, 3.0, 1.0, 0.1)
 
-# Elaborazione base
+# --- ELABORAZIONE DATI GRAFICI ---
 country_data = df_base[df_base['Paese'] == selected_country].copy()
 plot_data = []
 for _, row in country_data.iterrows():
@@ -131,7 +184,7 @@ with t_tax:
     
     prod = st.number_input(f"Produzione/Volume ({unita})", value=100000, step=10000)
     int_calc = (emissions_tot / prod) if prod > 0 else 0
-    if target_unit.startswith("g"): int_calc *= 1000 # Conversione in grammi
+    if target_unit.startswith("g"): int_calc *= 1000 
     
     is_aligned = int_calc <= soglia
     st.metric(f"Intensità Calcolata ({target_unit})", f"{int_calc:.2f}", delta="ALLINEATO" if is_aligned else "NON ALLINEATO", delta_color="normal" if is_aligned else "inverse")
@@ -147,9 +200,7 @@ with t_trans:
     
     with col2:
         st.subheader("🌳 Carbon Offsetting (Crediti VERs)")
-        st.markdown("Per le emissioni residue (Hard-to-abate / Scope 3), simula l'acquisto di crediti di carbonio certificati.")
         prezzo_ver = st.number_input("Prezzo Credito Volontario (€/tCO2)", value=15)
-        
         costo_offsetting = st.session_state.em_final * prezzo_ver
         st.metric("Costo Annuale per diventare 'Carbon Neutral'", f"€ {costo_offsetting:,.0f}")
         
@@ -158,9 +209,6 @@ with t_trans:
 # --- TAB 4: SUPPLY CHAIN NETWORK ---
 with t_supply:
     st.header("🔗 Mappa della Supply Chain & Trasmissione Rischio")
-    st.markdown("Come le tasse sul carbonio (CBAM) applicate ai fornitori si ripercuotono sui tuoi Scope 3.")
-    
-    # Sankey Diagram per visualizzare il flusso dei costi del carbonio
     labels = ["Fornitori (Extra-UE)", "Fornitori (UE)", "Tassa Doganale CBAM", "Tasse ETS (Locali)", "La Tua Azienda (OpEx)", "Utile Netto", "Perdita da Tasse"]
     source = [0, 0, 1, 1, 2, 3, 4, 4]
     target = [2, 4, 4, 4, 4, 4, 5, 6]
@@ -172,7 +220,6 @@ with t_supply:
 
 # --- TAB 5: COPERNICUS (RISCHIO FISICO GIS) ---
 with t_fisico:
-    from geopy.geocoders import Nominatim
     st.header("🛰️ Dati Satellitari Copernicus (ESA)")
     indirizzo = st.text_input("Inserisci Indirizzo o CAP", "Porto di Rotterdam, Paesi Bassi")
     
@@ -185,7 +232,6 @@ with t_fisico:
                 lat, lon = (loc.latitude, loc.longitude) if loc else (51.92, 4.47)
                 st.success(f"Coordinate: {lat:.4f}, {lon:.4f}. Dati storici scaricati.")
                 
-                # Mappa Mapbox
                 fig_map = px.scatter_mapbox(pd.DataFrame({"Lat":[lat],"Lon":[lon],"L":["Asset"]}), lat="Lat", lon="Lon", zoom=10, height=350)
                 fig_map.update_layout(mapbox_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0})
                 st.plotly_chart(fig_map, use_container_width=True)
@@ -197,14 +243,13 @@ with t_fisico:
             except:
                 st.error("Errore di geolocalizzazione.")
 
-# --- TAB 6 & 7: PORTAFOGLIO E REPORT ---
-# (Abbreviati per chiarezza, mantengono le logiche create in precedenza)
+# --- TAB 6: PORTAFOGLIO ---
 with t_port:
     st.header("Auto-compilazione Portafoglio (YFinance)")
-    st.markdown("Carica l'Excel. Il sistema cercherà i Ticker su Yahoo Finance per completare i dati mancanti.")
     uploaded_file = st.file_uploader("Carica Excel Multi-Asset", type=["csv", "xlsx"])
     if uploaded_file: st.success("Dati caricati e arricchiti tramite API di mercato!")
 
+# --- TAB 7: REPORT ---
 with t_rep:
     st.header("Generatore PDF con AI Insights")
     if st.button("🪄 Genera PDF TCFD/CSRD"):
