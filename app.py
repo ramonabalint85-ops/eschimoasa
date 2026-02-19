@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.express as px
 import yfinance as yf
 from fpdf import FPDF
-import base64
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="CarbonRisk Enterprise", layout="wide")
@@ -14,13 +13,28 @@ if 'opex' not in st.session_state: st.session_state.opex = 30_000_000
 if 'scope1' not in st.session_state: st.session_state.scope1 = 50000
 if 'scope2' not in st.session_state: st.session_state.scope2 = 40000
 if 'scope3' not in st.session_state: st.session_state.scope3 = 60000
-if 'em_final' not in st.session_state: st.session_state.em_final = 75000
 if 'perc_red' not in st.session_state: st.session_state.perc_red = 50
+if 'em_final' not in st.session_state: st.session_state.em_final = 75000
 
-# Ricalcola le emissioni finali in base alla percentuale
+# Funzioni di calcolo incrociato per mantenere tutto sincronizzato
+def get_tot_emissions():
+    return st.session_state.scope1 + st.session_state.scope2 + st.session_state.scope3
+
 def sync_from_perc():
-    tot = st.session_state.scope1 + st.session_state.scope2 + st.session_state.scope3
+    tot = get_tot_emissions()
     st.session_state.em_final = int(tot * (1 - st.session_state.perc_red / 100.0))
+
+def sync_from_final():
+    tot = get_tot_emissions()
+    if tot > 0:
+        val = (1 - st.session_state.em_final / tot) * 100
+        st.session_state.perc_red = max(0, min(100, int(val)))
+    else:
+        st.session_state.perc_red = 0
+
+def sync_from_scopes():
+    # Se cambio le emissioni di base, ricalcolo le finali mantenendo la percentuale attuale
+    sync_from_perc()
 
 # --- 1. MOTORE DATI (Offline Robusto) ---
 @st.cache_data
@@ -48,23 +62,18 @@ df_base = generate_offline_data()
 # --- 2. SIDEBAR (Dati, API e GHG Protocol) ---
 with st.sidebar:
     st.header("📡 1. Auto-Compilazione (API)")
-    ticker = st.text_input("Inserisci Ticker Yahoo Finance (es. ENEL.MI, TSLA, AAPL)")
+    ticker = st.text_input("Inserisci Ticker Yahoo Finance (es. ENEL.MI, TSLA)")
     if st.button("Scarica Dati Finanziari"):
         try:
             with st.spinner("Scaricamento bilancio..."):
                 stock = yf.Ticker(ticker)
                 fin = stock.financials
                 if not fin.empty:
-                    # Prende i ricavi totali dell'ultimo anno disponibile
                     st.session_state.revenue = int(fin.loc['Total Revenue'].iloc[0])
-                    # Stima OpEx come 70% dei ricavi se non trova la voce esatta
-                    try:
-                        st.session_state.opex = int(fin.loc['Operating Expense'].iloc[0])
-                    except:
-                        st.session_state.opex = int(st.session_state.revenue * 0.7)
+                    try: st.session_state.opex = int(fin.loc['Operating Expense'].iloc[0])
+                    except: st.session_state.opex = int(st.session_state.revenue * 0.7)
                     st.success(f"Dati di {ticker} caricati!")
-                else:
-                    st.warning("Dati non trovati per questo Ticker.")
+                else: st.warning("Dati non trovati per questo Ticker.")
         except Exception as e:
             st.error("Errore API. Inserisci i dati manualmente.")
 
@@ -76,14 +85,16 @@ with st.sidebar:
     st.divider()
     st.header("🌫️ 3. Protocollo GHG (Emissioni)")
     st.markdown("Suddividi le emissioni alla fonte:")
-    scope1 = st.number_input("Scope 1: Dirette (es. fumi, caldaie)", value=st.session_state.scope1, step=5000)
-    scope2 = st.number_input("Scope 2: Indirette (es. energia acquistata)", value=st.session_state.scope2, step=5000)
-    scope3 = st.number_input("Scope 3: Catena fornitura (es. trasporti)", value=st.session_state.scope3, step=5000)
+    # Collegati tramite KEY al session_state e alla funzione di aggiornamento
+    st.number_input("Scope 1: Dirette (es. fumi)", step=5000, key='scope1', on_change=sync_from_scopes)
+    st.number_input("Scope 2: Indirette (es. elettricità)", step=5000, key='scope2', on_change=sync_from_scopes)
+    st.number_input("Scope 3: Catena fornitura", step=5000, key='scope3', on_change=sync_from_scopes)
     
-    emissions_tot = scope1 + scope2 + scope3
+    emissions_tot = get_tot_emissions()
     st.info(f"**Totale Emissioni: {emissions_tot:,} tCO2**")
     
-    emissions_final = st.number_input("Emissioni Finali (Target tCO2)", value=st.session_state.em_final, step=5000)
+    # Collegato allo slider del Tab Transizione
+    emissions_final = st.number_input("Emissioni Finali (Target tCO2)", step=5000, key='em_final', on_change=sync_from_final)
     
     st.divider()
     st.header("🏦 4. Dati Debito e Politiche")
@@ -125,7 +136,6 @@ tab_1, tab_tax, tab_transizione, tab_fisico, tab_credito, tab_portafoglio, tab_r
     "📄 Esporta PDF"
 ])
 
-# (Le schermate 1, 3, 4, 5 rimangono quasi identiche ma usano emissions_tot)
 with tab_1:
     st.header("Traiettoria Prezzi e Impatto Base")
     col1, col2 = st.columns(2)
@@ -169,6 +179,8 @@ with tab_transizione:
     col_t1, col_t2, col_t3 = st.columns(3)
     capex = col_t1.number_input("Investimento (CapEx) in €", value=10_000_000, step=1_000_000)
     anno_inv = col_t2.slider("Anno di completamento lavori", 2025, 2040, 2026)
+    
+    # IL CURSORE ORA È COLLEGATO PERFETTAMENTE
     col_t3.slider("Riduzione Emissioni Stimata (%)", 0, 100, key='perc_red', on_change=sync_from_perc)
     
     sim_data = []
@@ -192,7 +204,7 @@ with tab_fisico:
     livello_rischio = st.radio("Livello Esposizione:", ["Basso", "Medio", "Alto"], horizontal=True)
     molt_danno = {"Basso": 0.01, "Medio": 0.03, "Alto": 0.06}[livello_rischio]
     fisico_data = [{"Anno": y, "Utile Netto": revenue - (opex * (1 + ((y - 2020) * molt_danno)))} for y in range(2020, 2055, 5)]
-    fig_fisico = px.bar(pd.DataFrame(fisico_data), x="Anno", y="Utile Netto", template="plotly_white")
+    fig_fisico = px.bar(pd.DataFrame(fisico_data), x="Anno", y="Utile Netto", template="plotly_white", color_discrete_sequence=['#ff9999' if livello_rischio=="Medio" else '#ff4d4d' if livello_rischio=="Alto" else '#99ccff'])
     st.plotly_chart(fig_fisico, use_container_width=True)
 
 with tab_credito:
@@ -201,105 +213,85 @@ with tab_credito:
     fig_dscr.add_hline(y=1.1, line_dash="dash", line_color="red", annotation_text="Default Bancario")
     st.plotly_chart(fig_dscr, use_container_width=True)
 
-# ==========================================
-# NUOVO TAB 6: ANALISI PORTAFOGLIO (EXCEL)
-# ==========================================
 with tab_portafoglio:
     st.header("📊 Analisi di Portafoglio Multi-Asset")
     st.markdown("Carica un file CSV o Excel contenente i dati di più aziende per mappare il rischio globale.")
     
-    # Crea un file Excel di esempio (Mock) che l'utente può scaricare e riempire
     example_df = pd.DataFrame({
         "Azienda": ["Impianto Alpha", "Fabbrica Beta", "Logistica Gamma"],
         "Ricavi": [50000000, 20000000, 15000000],
         "OpEx": [30000000, 18000000, 10000000],
         "Emissioni_Totali": [150000, 80000, 10000]
     })
-    st.download_button("📥 Scarica Template Excel (Esempio)", data=example_df.to_csv(index=False).encode('utf-8'), file_name="Template_Portafoglio.csv", mime="text/csv")
+    st.download_button("📥 Scarica Template (Esempio)", data=example_df.to_csv(index=False).encode('utf-8'), file_name="Template_Portafoglio.csv", mime="text/csv")
     
     uploaded_file = st.file_uploader("Carica il tuo file CSV o Excel", type=["csv", "xlsx"])
     
     if uploaded_file is not None:
-        if uploaded_file.name.endswith('.csv'):
-            port_df = pd.read_csv(uploaded_file)
-        else:
-            port_df = pd.read_excel(uploaded_file)
+        if uploaded_file.name.endswith('.csv'): port_df = pd.read_csv(uploaded_file)
+        else: port_df = pd.read_excel(uploaded_file)
             
         st.success(f"Caricate {len(port_df)} aziende con successo!")
-        st.dataframe(port_df.head())
         
-        # Simula il rischio nel 2030 (Scenario Shock)
         prezzo_carbonio_2030 = 20 * policy_multiplier
         port_df['Tassa_Carbonio_2030'] = port_df['Emissioni_Totali'] * prezzo_carbonio_2030
         port_df['Utile_2030'] = port_df['Ricavi'] - port_df['OpEx'] - port_df['Tassa_Carbonio_2030']
         port_df['Margine_%'] = (port_df['Utile_2030'] / port_df['Ricavi']) * 100
         
-        st.subheader("Mappa di Calore del Rischio (2030)")
-        fig_scatter = px.scatter(port_df, x="Emissioni_Totali", y="Margine_%", size="Ricavi", color="Margine_%", hover_name="Azienda", color_continuous_scale="RdYlGn", title="Sopravvivenza del Portafoglio nel 2030 (Più basso e rosso = Rischio Fallimento)")
+        fig_scatter = px.scatter(port_df, x="Emissioni_Totali", y="Margine_%", size="Ricavi", color="Margine_%", hover_name="Azienda", color_continuous_scale="RdYlGn", title="Sopravvivenza del Portafoglio (Shock 2030)")
         fig_scatter.add_hline(y=0, line_dash="dash", line_color="red", annotation_text="Soglia Fallimento")
         st.plotly_chart(fig_scatter, use_container_width=True)
 
-# ==========================================
-# NUOVO TAB 7: GENERATORE REPORT PDF
-# ==========================================
 with tab_report:
-    st.header("📄 Genera Report Ufficiale PDF (Board-Ready)")
-    st.markdown("Crea un documento PDF riassuntivo stampabile, perfetto da allegare ai documenti di compliance TCFD/CSRD o per il Consiglio di Amministrazione.")
+    st.header("📄 Genera Report Ufficiale PDF")
     
-    if st.button("🪄 Genera e Scarica PDF"):
-        # Creazione dinamica del PDF usando FPDF
+    if st.button("🪄 Genera PDF"):
         pdf = FPDF()
         pdf.add_page()
         
-        # Intestazione
         pdf.set_font("Arial", 'B', 16)
         pdf.cell(200, 10, txt="CarbonRisk Enterprise - Report di Sostenibilità", ln=True, align='C')
         pdf.set_font("Arial", 'I', 10)
         pdf.cell(200, 10, txt=f"Asset analizzato in: {selected_country}", ln=True, align='C')
         pdf.ln(10)
         
-        # Dati Finanziari
         pdf.set_font("Arial", 'B', 12)
         pdf.cell(200, 10, txt="1. Sommari Finanziari e Rischio di Credito", ln=True)
         pdf.set_font("Arial", '', 11)
         pdf.cell(200, 8, txt=f"- Ricavi Annuali: EUR {revenue:,.0f}", ln=True)
         pdf.cell(200, 8, txt=f"- Costi Operativi (OpEx): EUR {opex:,.0f}", ln=True)
         
-        # Calcola un dato al volo (DSCR 2030)
         dscr_2030 = plot_df[(plot_df['Anno']==2030) & (plot_df['Scenario']=='Transizione Ritardata (Shock)')]['DSCR'].values[0]
         pdf.cell(200, 8, txt=f"- DSCR Previsto nel 2030 (Shock Scenario): {dscr_2030:.2f}x", ln=True)
         avviso = "ATTENZIONE: Rischio Default" if dscr_2030 < 1.1 else "OK: Nessun Rischio Default"
         pdf.cell(200, 8, txt=f"- Stato Bancario 2030: {avviso}", ln=True)
         pdf.ln(5)
         
-        # Emissioni (GHG Protocol)
         pdf.set_font("Arial", 'B', 12)
         pdf.cell(200, 10, txt="2. Inventario Emissioni (GHG Protocol)", ln=True)
         pdf.set_font("Arial", '', 11)
-        pdf.cell(200, 8, txt=f"- Scope 1 (Dirette): {scope1:,} tCO2", ln=True)
-        pdf.cell(200, 8, txt=f"- Scope 2 (Indirette): {scope2:,} tCO2", ln=True)
-        pdf.cell(200, 8, txt=f"- Scope 3 (Catena del Valore): {scope3:,} tCO2", ln=True)
+        pdf.cell(200, 8, txt=f"- Scope 1 (Dirette): {st.session_state.scope1:,} tCO2", ln=True)
+        pdf.cell(200, 8, txt=f"- Scope 2 (Indirette): {st.session_state.scope2:,} tCO2", ln=True)
+        pdf.cell(200, 8, txt=f"- Scope 3 (Catena Valore): {st.session_state.scope3:,} tCO2", ln=True)
         pdf.set_font("Arial", 'B', 11)
         pdf.cell(200, 8, txt=f"- TOTALE IMPRONTA CARBONICA: {emissions_tot:,} tCO2", ln=True)
         pdf.ln(5)
         
-        # Tassonomia UE
         pdf.set_font("Arial", 'B', 12)
-        pdf.cell(200, 10, txt="3. Analisi Tassonomia UE (CSRD)", ln=True)
+        pdf.cell(200, 10, txt="3. Analisi Tassonomia UE", ln=True)
         pdf.set_font("Arial", '', 11)
         esito_tax = "ALLINEATO (Idoneo Green Bonds)" if int_disp_iniziale <= soglia else "NON ALLINEATO"
-        pdf.cell(200, 8, txt=f"- Esito Screening Tecnico: {esito_tax}", ln=True)
-        pdf.cell(200, 8, txt=f"- Intensita' di emissione calcolata: {int_disp_iniziale:.1f} {unita_int}", ln=True)
+        pdf.cell(200, 8, txt=f"- Esito Screening Tecnico (Attuale): {esito_tax}", ln=True)
+        pdf.cell(200, 8, txt=f"- Intensita' calcolata: {int_disp_iniziale:.1f} {unita_int}", ln=True)
         pdf.cell(200, 8, txt=f"- Limite di legge (Soglia UE): {soglia} {unita_int}", ln=True)
         
-        # Genera file
-        pdf_output = pdf.output(dest="S").encode("latin-1")
+        # FIX DEFINITIVO: fpdf2 genera il bytearray direttamente senza .encode!
+        pdf_bytes = bytes(pdf.output())
         
-        # Bottone Download
         st.success("Il PDF è pronto!")
         st.download_button(
             label="📥 Scarica il Report (PDF)",
-            data=pdf_output,
+            data=pdf_bytes,
             file_name="Report_Sostenibilita_CarbonRisk.pdf",
             mime="application/pdf"
         )
