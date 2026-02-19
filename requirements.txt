@@ -2,7 +2,8 @@ streamlit
 pandas
 plotly
 yfinance
-fpdf2
-openpyxl
+fpdf
+numpy
+PyPDF2
+openai
 geopy
-networkx
