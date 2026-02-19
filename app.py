@@ -11,6 +11,7 @@ import json
 from openai import OpenAI
 from geopy.geocoders import Nominatim
 import os
+import xml.etree.ElementTree as ET
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="CarbonRisk AI Enterprise", layout="wide")
@@ -35,7 +36,124 @@ def get_tot_emissions(): return st.session_state.scope1 + st.session_state.scope
 def sync_from_perc(): st.session_state.em_final = int(get_tot_emissions() * (1 - st.session_state.perc_red / 100.0))
 def sync_from_scopes(): sync_from_perc()
 
-# --- MOTORE DATI E DATABASE CN CODES ---
+# --- MOTORE DATI, NACE E DATABASE CN CODES ---
+
+def get_nace_section(d_code):
+    """Mappa le divisioni (2 digit) alle corrispondenti sezioni NACE (A-U)"""
+    try:
+        d = int(d_code)
+        if 1 <= d <= 3: return 'A'
+        if 5 <= d <= 9: return 'B'
+        if 10 <= d <= 33: return 'C'
+        if d == 35: return 'D'
+        if 36 <= d <= 39: return 'E'
+        if 41 <= d <= 43: return 'F'
+        if 45 <= d <= 47: return 'G'
+        if 49 <= d <= 53: return 'H'
+        if 55 <= d <= 56: return 'I'
+        if 58 <= d <= 63: return 'J'
+        if 64 <= d <= 66: return 'K'
+        if d == 68: return 'L'
+        if 69 <= d <= 75: return 'M'
+        if 77 <= d <= 82: return 'N'
+        if d == 84: return 'O'
+        if d == 85: return 'P'
+        if 86 <= d <= 88: return 'Q'
+        if 90 <= d <= 93: return 'R'
+        if 94 <= d <= 96: return 'S'
+        if 97 <= d <= 98: return 'T'
+        if d == 99: return 'U'
+    except:
+        pass
+    return 'UNKNOWN'
+
+@st.cache_data
+def load_nace_hierarchy(file_path="NACE_Rev.2.1.rdf"):
+    """Crea un dizionario a 4 livelli leggendo il file NACE RDF ufficiale"""
+    fallback = {"C - Attività manifatturiere": {"10 - Industrie alimentari": {"10.1 - Lavorazione delle carni": {"10.11 - Lavorazione e conservazione di carne": "10.11"}}}}
+    if not os.path.exists(file_path):
+        return fallback
+    
+    try:
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+        ns = {
+            'rdf': 'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
+            'skos': 'http://www.w3.org/2004/02/skos/core#'
+        }
+        
+        sections, divisions, groups, classes = {}, {}, {}, {}
+        
+        for desc in root.findall('rdf:Description', ns):
+            about = desc.attrib.get(f"{{{ns['rdf']}}}about", "")
+            code = about.split('/')[-1]
+            
+            # Filtro codici validi
+            if not code or 'NACE2' in about or 'SPACE' in about or 'MIG' in about: continue
+            if code in ['sections', 'divisions', 'groups', 'classes', 'nace2.1']: continue
+                
+            labels = desc.findall('skos:prefLabel', ns)
+            label_it, label_en = None, None
+            for l in labels:
+                lang = l.attrib.get('{http://www.w3.org/XML/1998/namespace}lang')
+                if lang == 'it': label_it = l.text
+                elif lang == 'en': label_en = l.text
+            label = label_it if label_it else (label_en if label_en else code)
+            
+            # Categorizzazione per livello
+            if code.isalpha() and len(code) == 1:
+                sections[code] = {'label': f"{code} - {label}", 'children': {}}
+            elif code.isdigit() and len(code) == 2:
+                divisions[code] = {'label': f"{code} - {label}", 'children': {}}
+            elif len(code) == 3 and code.isdigit():
+                fmt_code = f"{code[:2]}.{code[2:]}"
+                groups[code] = {'label': f"{fmt_code} - {label}", 'children': {}}
+            elif len(code) == 4 and code.isdigit():
+                fmt_code = f"{code[:2]}.{code[2:]}"
+                classes[code] = {'label': f"{fmt_code} - {label}", 'code': fmt_code}
+
+        # Costruzione Albero Gerarchico
+        for d_code, d_data in divisions.items():
+            s_code = get_nace_section(d_code)
+            if s_code in sections:
+                sections[s_code]['children'][d_code] = d_data
+                
+        for g_code, g_data in groups.items():
+            d_code = g_code[:2]
+            if d_code in divisions:
+                divisions[d_code]['children'][g_code] = g_data
+                
+        for c_code, c_data in classes.items():
+            g_code = c_code[:3]
+            if g_code in groups:
+                groups[g_code]['children'][c_code] = c_data
+                
+        # Creazione dizionario finale annidato
+        ui_db = {}
+        for s_code in sorted(sections.keys()):
+            s_data = sections[s_code]
+            if not s_data['children']: continue
+            s_label = s_data['label']
+            ui_db[s_label] = {}
+            for d_code in sorted(s_data['children'].keys()):
+                d_data = s_data['children'][d_code]
+                if not d_data['children']: continue
+                d_label = d_data['label']
+                ui_db[s_label][d_label] = {}
+                for g_code in sorted(d_data['children'].keys()):
+                    g_data = d_data['children'][g_code]
+                    if not g_data['children']: continue
+                    g_label = g_data['label']
+                    ui_db[s_label][d_label][g_label] = {}
+                    for c_code in sorted(g_data['children'].keys()):
+                        c_data = g_data['children'][c_code]
+                        ui_db[s_label][d_label][g_label][c_data['label']] = c_data['code']
+                        
+        return ui_db if ui_db else fallback
+    except Exception as e:
+        print(f"Error: {e}")
+        return fallback
+
 @st.cache_data
 def generate_offline_data():
     data = []
@@ -54,13 +172,11 @@ df_base = generate_offline_data()
 
 @st.cache_data
 def load_cn_codes():
-    # Tenta di leggere il file CSV reale, altrimenti usa il fallback
     try:
         df_cn = pd.read_csv("CBAM Self Assessment Tool Version 1.1.xlsx - CN Codes.csv")
         df_cn['CN Code'] = df_cn['CN Code'].astype(str).str.zfill(8)
         return df_cn
     except:
-        # Fallback esteso per permettere di testare l'autocompletamento
         data = {
             'Main Category': ['Cement', 'Cement', 'Cement', 'Fertilizers', 'Fertilizers', 'Iron and Steel', 'Iron and Steel', 'Iron and Steel', 'Aluminium', 'Aluminium', 'Hydrogen', 'Electricity', 'Other'],
             'CN Code': ['25070080', '25231000', '25232100', '31021010', '28141000', '72000000', '72011011', '73041100', '76010000', '76041010', '28041000', '27160000', '99999999'],
@@ -160,7 +276,7 @@ st.title("🌍 Piattaforma CarbonRisk AI")
 st.markdown("Seleziona una delle schede qui sotto per procedere con l'analisi strategica.")
 
 t_home, t_rischi, t_tax, t_cbam, t_down = st.tabs([
-    "🏠 Home", "📊 Analisi Rischi", "🇪🇺 Tassonomia", "🌍 CBAM (Self-Assessment)", "📥 Download Ufficiali"
+    "🏠 Home", "📊 Analisi Rischi", "🇪🇺 Tassonomia UE (NACE RDF)", "🌍 CBAM (Self-Assessment)", "📥 Download Ufficiali"
 ])
 
 # --- TAB 1: HOME ---
@@ -265,77 +381,13 @@ with t_rischi:
         costo_offsetting = st.session_state.em_final * prezzo_ver
         st.metric("Costo Annuale per raggiungere neutralità climatica assoluta", f"€ {costo_offsetting:,.0f}")
 
-# --- TAB 3: TASSONOMIA UE (COMPLETA E BELLA) ---
+# --- TAB 3: TASSONOMIA UE (RDF ESTESO) ---
 with t_tax:
-    st.header("🇪🇺 Reporting Tassonomia UE (Struttura Annex II)")
-    st.markdown("Dichiara la totalità del tuo CapEx. Le attività non coperte dalla Tassonomia (es. Commercio, Finanza, Estrazione Fossile) verranno classificate in automatico come **Non Ammissibili (Non-Eligible)**.")
+    st.header("🇪🇺 Reporting Tassonomia UE (Completo - NACE Rev. 2.1 RDF)")
+    st.markdown("Dichiara il CapEx navigando nell'albero completo NACE Rev 2.1. Usa la spunta per confermare se l'attività economica selezionata è classificabile come *Eligible* secondo i parametri della Tassonomia UE.")
 
-    # Database NACE Esteso a includere settori NON eligibili
-    tassonomia_db = {
-        "Agricoltura, silvicoltura e pesca": {
-            "Coltivazione di colture non perenni": "A1.1", 
-            "Coltivazione di colture perenni": "A1.2",
-            "Allevamento di bestiame": "A1.4",
-            "Silvicoltura e gestione forestale": "A2.1"
-        },
-        "Attività manifatturiere": {
-            "Fabbricazione di cemento": "C23.51", 
-            "Fabbricazione di alluminio": "C24.42",
-            "Fabbricazione di ferro e acciaio": "C24.1", 
-            "Fabbricazione di materie plastiche": "C20.16",
-            "Fabbricazione di prodotti chimici": "C20.1",
-            "Fabbricazione di batterie": "C27.2",
-            "Fabbricazione di veicoli a basse emissioni": "C29.1"
-        },
-        "Fornitura di energia": {
-            "Produzione di energia solare fotovoltaica": "D35.11", 
-            "Produzione di energia eolica": "D35.11", 
-            "Produzione di energia idroelettrica": "D35.11",
-            "Trasmissione e distribuzione di energia elettrica": "D35.12",
-            "Stoccaggio di energia elettrica": "D35.11"
-        },
-        "Acqua e Rifiuti": {
-            "Raccolta e depurazione delle acque di scarico": "E37.00",
-            "Recupero dei materiali (Riciclo)": "E38.32",
-            "Raccolta di rifiuti non pericolosi": "E38.11"
-        },
-        "Trasporto e magazzinaggio": {
-            "Trasporto passeggeri interurbano": "H49.39", 
-            "Trasporto merci su strada": "H49.41",
-            "Trasporto marittimo e costiero": "H50.1",
-            "Infrastrutture mobilità zero emissioni": "F42.11"
-        },
-        "Costruzioni e attività immobiliari": {
-            "Costruzione di nuovi edifici": "F41.2", 
-            "Ristrutturazione di edifici esistenti": "F41.2",
-            "Acquisto e proprietà edifici (Real Estate)": "L68.2"
-        },
-        "Informazione e comunicazione (ICT)": {
-            "Elaborazione dati e hosting (Data Center)": "J63.11",
-            "Programmazione informatica (Soluzioni Clima)": "J62.01"
-        },
-        # --- SETTORI NON AMMISSIBILI ---
-        "Attività estrattive (Non Ammissibili)": {
-            "Estrazione di carbone": "B05",
-            "Estrazione di petrolio greggio e gas naturale": "B06",
-            "Altre attività estrattive": "B08"
-        },
-        "Commercio all'ingrosso e dettaglio (Non Ammissibili)": {
-            "Commercio di autoveicoli e motocicli": "G45",
-            "Commercio all'ingrosso": "G46",
-            "Commercio al dettaglio": "G47"
-        },
-        "Attività finanziarie e assicurative (Non Ammissibili)": {
-            "Intermediazione monetaria (Banche)": "K64",
-            "Assicurazioni e fondi pensione": "K65"
-        },
-        "Altre attività di servizi (Non Ammissibili)": {
-            "Servizi di ristorazione e alloggio": "I55-56",
-            "Attività professionali, scientifiche e tecniche": "M",
-            "Sanità e assistenza sociale": "Q",
-            "Altre attività non classificate o generali": "N/A"
-        }
-    }
+    # Caricamento dinamico del Database dal file RDF
+    nace_db = load_nace_hierarchy("NACE_Rev.2.1.rdf")
 
     c_tax_head1, c_tax_head2 = st.columns([1, 2])
     c_tax_head1.metric("CapEx Totale di Riferimento", f"€ {st.session_state.capex_totale:,.0f}")
@@ -344,28 +396,34 @@ with t_tax:
         col_tax1, col_tax2 = st.columns(2)
 
         with col_tax1:
-            settore = st.selectbox("Macro-Settore", list(tassonomia_db.keys()))
-            attivita = st.selectbox("Attività Economica", list(tassonomia_db[settore].keys()))
-            nace_code = tassonomia_db[settore][attivita]
+            settore = st.selectbox("Sezione (Livello 1)", list(nace_db.keys()))
+            divisione = st.selectbox("Divisione (Livello 2)", list(nace_db[settore].keys()) if settore else [])
+            gruppo = st.selectbox("Gruppo (Livello 3)", list(nace_db[settore][divisione].keys()) if divisione else [])
+            classe = st.selectbox("Classe (Livello 4)", list(nace_db[settore][divisione][gruppo].keys()) if gruppo else [])
+            
+            nace_code = nace_db[settore][divisione][gruppo][classe] if classe else ""
+            attivita = classe.split(" - ", 1)[-1] if classe else ""
+            
             capex_attivita = st.number_input("Absolute CapEx (€)", min_value=0, value=0, step=100000)
 
-        # Logica di Ammissibilità ed Emissioni
-        is_eligible = "Non Ammissibili" not in settore
-        
+            # Il DB NACE ha tutto, quindi lasciamo all'utente la responsabilità di dichiarare l'ammissibilità.
+            is_eligible = st.checkbox("☑️ Marca come Attività Ammissibile (Taxonomy-Eligible)", value=True)
+
+        # Logica euristica per impostare test e soglie basata sulla stringa dell'attività
         attivita_lower = attivita.lower()
         if not is_eligible:
             unita, soglia, target_unit = "N/A", 0, "N/A"
-        elif "edifici" in attivita_lower or "real estate" in attivita_lower: unita, soglia, target_unit = "m2 Gestiti", 80.0, "kWh/m2"
-        elif "trasporto" in attivita_lower or "mobilità" in attivita_lower: unita, soglia, target_unit = "tkm", 50.0, "gCO2/tkm"
+        elif "edifici" in attivita_lower or "costruzione" in attivita_lower or "immobili" in attivita_lower: unita, soglia, target_unit = "m2 Gestiti", 80.0, "kWh/m2"
+        elif "trasporto" in attivita_lower or "veicoli" in attivita_lower: unita, soglia, target_unit = "tkm", 50.0, "gCO2/tkm"
         elif "cemento" in attivita_lower: unita, soglia, target_unit = "Tonnellate prodotte", 0.72, "tCO2/ton"
-        elif "acciaio" in attivita_lower or "alluminio" in attivita_lower: unita, soglia, target_unit = "Tonnellate", 1.3, "tCO2/ton"
-        elif "energia" in settore.lower() or "fotovoltaica" in attivita_lower: unita, soglia, target_unit = "MWh", 100.0, "gCO2/kWh"
-        elif "data center" in attivita_lower: unita, soglia, target_unit = "Terabyte (TB)", 1.2, "PUE"
+        elif "acciaio" in attivita_lower or "alluminio" in attivita_lower or "metalli" in attivita_lower: unita, soglia, target_unit = "Tonnellate", 1.3, "tCO2/ton"
+        elif "energia" in attivita_lower or "elettricità" in attivita_lower or "fornitura" in attivita_lower: unita, soglia, target_unit = "MWh", 100.0, "gCO2/kWh"
+        elif "dati" in attivita_lower or "informatici" in attivita_lower or "software" in attivita_lower: unita, soglia, target_unit = "Terabyte (TB)", 1.2, "PUE"
         else: unita, soglia, target_unit = "Unità", 1.0, "tCO2/unità"
 
         with col_tax2:
             if not is_eligible:
-                st.error("⚠️ L'attività selezionata **NON è attualmente ammissibile** ai sensi della Tassonomia UE. I test tecnici non sono applicabili.")
+                st.error("⚠️ L'attività NON è marcata come ammissibile. I test tecnici non sono applicabili.")
                 tsc_passed = False
             else:
                 st.markdown(f"**Test Substantial Contribution (CCM):** `<= {soglia} {target_unit}`")
@@ -479,7 +537,6 @@ with t_cbam:
         col_cb1, col_cb2 = st.columns(2)
         
         with col_cb1:
-            # BARRA DI RICERCA INTELLIGENTE: Index=None la lascia vuota all'inizio obbligando la ricerca
             merce_selezionata = st.selectbox(
                 "🔍 Cerca Codice CN o Descrizione Merce (inizia a digitare per filtrare...)", 
                 options=cn_options,
@@ -499,10 +556,8 @@ with t_cbam:
             importato_ue = st.selectbox("Rilasciato per la libera pratica in UE? (Art. 203 UCC)", ["Sì", "No (Transito)"])
             valore_merce = st.number_input("Valore Intrinseco Spedizione (€)", min_value=0.0, value=0.0, step=100.0)
 
-        # Se l'utente ha selezionato qualcosa dalla barra di ricerca, processa la logica
         if st.button("Valuta Dogana e Registra"):
             if merce_selezionata and emissioni_merce >= 0:
-                # Logica Albero Decisionale
                 is_annex_i = dati_merce['CBAM Applies'] 
                 is_3rd_country = "No" if paesi_origine[origine_merce]["Exempt"] else "Sì"
                 is_over_150 = "Sì" if valore_merce > 150.0 else "No"
