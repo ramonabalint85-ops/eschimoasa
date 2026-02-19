@@ -210,13 +210,13 @@ with t_rischi:
 
     # 2C. RISCHIO CREDITO & CARBON OFFSETTING
     with rt_credito:
-        st.subheader("1. Stress Test Finanziario")
+        st.subheader("1. Stress Test Finanziario & Condizioni di Credito")
         c_cred1, c_cred2, c_cred3 = st.columns(3)
         c_cred1.number_input("Rata Prestito Bancario (€)", value=st.session_state.rata_prestito, step=500_000, key='rata_prestito')
         c_cred2.number_input("Ammortamenti Annuali (€)", value=st.session_state.ammortamenti, step=500_000, key='ammortamenti')
         c_cred3.slider("Severità Leggi Locali (Moltiplicatore CO2)", 1.0, 3.0, value=st.session_state.policy_multiplier, step=0.1, key='policy_multiplier')
 
-        # Calcolo dinamico dati grafici con le variabili aggiornate
+        # Dati Grafici Dinamici
         country_data = df_base[df_base['Paese'] == st.session_state.selected_country].copy()
         plot_data = []
         emissions_tot = get_tot_emissions()
@@ -228,12 +228,53 @@ with t_rischi:
         color_map = {'Net Zero 2050 (Ordinata)': '#EF553B', 'Transizione Ritardata (Shock)': '#FECB52', 'Politiche Attuali (BAU)': '#00CC96'}
 
         cg1, cg2 = st.columns(2)
-        cg1.plotly_chart(px.line(plot_df, x="Anno", y="Prezzo Carbonio (€/t)", color="Scenario", color_discrete_map=color_map, title="Evoluzione Prezzo Carbonio"), use_container_width=True)
-        cg2.plotly_chart(px.line(plot_df, x="Anno", y="Utile Netto (€)", color="Scenario", color_discrete_map=color_map, title="Impatto sugli Utili (Senza Transizione)"), use_container_width=True)
+        # Legende Spostate in basso
+        fig_prezzo = px.line(plot_df, x="Anno", y="Prezzo Carbonio (€/t)", color="Scenario", color_discrete_map=color_map, title="Evoluzione Prezzo Carbonio")
+        fig_prezzo.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
+        cg1.plotly_chart(fig_prezzo, use_container_width=True)
+        
+        fig_utile = px.line(plot_df, x="Anno", y="Utile Netto (€)", color="Scenario", color_discrete_map=color_map, title="Impatto sugli Utili (Senza Transizione)")
+        fig_utile.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
+        cg2.plotly_chart(fig_utile, use_container_width=True)
 
         st.divider()
 
-        st.subheader("2. Carbon Offsetting (Crediti VERs)")
+        # NUOVO BLOCCO: Prima vs Dopo la transizione
+        st.subheader("2. Analisi d'Impatto: Prima e Dopo la Transizione (Simulazione 2030)")
+        st.markdown("Confronto visivo tra lo scenario senza interventi (tasse elevate) e lo scenario con CapEx (tasse ridotte, inclusa rata prestito).")
+        
+        prezzo_rif = 70.0 * st.session_state.policy_multiplier
+        tasse_prima = emissions_tot * prezzo_rif
+        costi_prima = st.session_state.opex + tasse_prima
+        utile_prima = st.session_state.revenue - costi_prima
+        
+        tasse_dopo = st.session_state.em_final * prezzo_rif
+        costi_dopo = st.session_state.opex + tasse_dopo + st.session_state.rata_prestito
+        utile_dopo = st.session_state.revenue - costi_dopo
+        
+        col_bar1, col_bar2 = st.columns(2)
+        
+        with col_bar1:
+            fig_prima = go.Figure(data=[
+                go.Bar(name='Ricavi', x=[''], y=[st.session_state.revenue], offsetgroup=0, marker_color='#0070C0'),
+                go.Bar(name='Costi (OpEx + Tasse)', x=[''], y=[costi_prima], offsetgroup=1, marker_color='#C00000'),
+                go.Bar(name='Utile Netto', x=[''], y=[utile_prima], offsetgroup=1, base=[costi_prima], marker_color='#00B050')
+            ])
+            fig_prima.update_layout(title=dict(text="Prima della Transizione", x=0.5), legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
+            st.plotly_chart(fig_prima, use_container_width=True)
+            
+        with col_bar2:
+            fig_dopo = go.Figure(data=[
+                go.Bar(name='Ricavi', x=[''], y=[st.session_state.revenue], offsetgroup=0, marker_color='#0070C0'),
+                go.Bar(name='Costi (Incl. Prestito e Tasse)', x=[''], y=[costi_dopo], offsetgroup=1, marker_color='#C00000'),
+                go.Bar(name='Utile Netto (Post-Transizione)', x=[''], y=[utile_dopo], offsetgroup=1, base=[costi_dopo], marker_color='#00B050')
+            ])
+            fig_dopo.update_layout(title=dict(text="Dopo la Transizione", x=0.5), legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
+            st.plotly_chart(fig_dopo, use_container_width=True)
+
+        st.divider()
+
+        st.subheader("3. Carbon Offsetting (Crediti VERs)")
         st.markdown(f"Per neutralizzare le **{st.session_state.em_final:,} tCO2** residue calcolate nella fase di transizione.")
         prezzo_ver = st.number_input("Prezzo Mercato Volontario (€/tCO2)", value=15)
         costo_offsetting = st.session_state.em_final * prezzo_ver
@@ -300,8 +341,27 @@ with t_cbam:
         (st.session_state.revenue - st.session_state.opex - costo_netto_cbam)
     ]
     
-    fig_sankey = go.Figure(data=[go.Sankey(node=dict(pad=15, thickness=20, line=dict(color="black", width=0.5), label=labels, color="#2E86AB"), link=dict(source=source, target=target, value=value, color="#EAEAEA"))])
-    fig_sankey.update_layout(height=450, margin=dict(l=0, r=0, t=30, b=0))
+    # MODIFICA FONT SANKEY: Reso nero, più grande e visibile
+    fig_sankey = go.Figure(data=[go.Sankey(
+        node=dict(
+            pad=15, 
+            thickness=20, 
+            line=dict(color="black", width=0.5), 
+            label=labels, 
+            color="#2E86AB"
+        ), 
+        link=dict(
+            source=source, 
+            target=target, 
+            value=value, 
+            color="#EAEAEA"
+        )
+    )])
+    fig_sankey.update_layout(
+        height=450, 
+        margin=dict(l=0, r=0, t=30, b=0),
+        font=dict(size=14, color="black", family="Arial, sans-serif") # Impostazione Font ben visibile
+    )
     st.plotly_chart(fig_sankey, use_container_width=True)
 
 # --- TAB 5: DOWNLOAD ---
@@ -347,7 +407,6 @@ with t_down:
         st.subheader("Registro Doganale CBAM (CSV)")
         st.markdown("File precompilato strutturato per l'upload sul portale transitorio della Commissione UE.")
         
-        # Generiamo un CSV fittizio strutturato come il registro doganale europeo
         cbam_csv_data = f"Importer_ID,Origin_Country,Goods_Category,Imported_Emissions_tCO2,Foreign_Tax_Paid_EUR,Net_CBAM_Due\nIT99999999,{origine_fornitori},Steel/Aluminum,{emissioni_importate},{tassa_estera},{costo_netto_cbam:.2f}"
         
         st.download_button(label="📥 Scarica Dichiarazione CBAM (.CSV)", data=cbam_csv_data, file_name="Dichiarazione_CBAM_EU.csv", mime="text/csv")
