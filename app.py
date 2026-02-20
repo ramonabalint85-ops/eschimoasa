@@ -17,14 +17,31 @@ import requests
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="CarbonRisk AI Enterprise", layout="wide")
 
+# --- DATABASE GICS (Global Industry Classification Standard) ---
+if 'gics_sectors' not in st.session_state:
+    st.session_state.gics_sectors = {
+        "Industrials": ["Aerospace & Defense", "Building Products", "Construction & Engineering", "Electrical Equipment", "Industrial Conglomerates", "Machinery", "Commercial Services", "Transportation"],
+        "Energy": ["Oil, Gas & Consumable Fuels", "Energy Equipment & Services"],
+        "Materials": ["Chemicals", "Construction Materials", "Containers & Packaging", "Metals & Mining", "Paper & Forest Products"],
+        "Consumer Discretionary": ["Automobiles & Components", "Consumer Durables & Apparel", "Consumer Services", "Retailing"],
+        "Consumer Staples": ["Food & Staples Retailing", "Food, Beverage & Tobacco", "Household & Personal Products"],
+        "Health Care": ["Health Care Equipment & Services", "Pharmaceuticals & Biotechnology"],
+        "Financials": ["Banks", "Financial Services", "Insurance"],
+        "Information Technology": ["Software & Services", "Technology Hardware & Equipment", "Semiconductors"],
+        "Communication Services": ["Telecommunication Services", "Media & Entertainment"],
+        "Utilities": ["Electric Utilities", "Gas Utilities", "Multi-Utilities", "Water Utilities", "Renewable Electricity"],
+        "Real Estate": ["Equity REITs", "Real Estate Management & Development"],
+        "Altro / Non Specificato": ["Altro"]
+    }
+
 # --- SINCRONIZZAZIONE (Session State) ---
+st.session_state.setdefault('sector', 'Industrials')
+st.session_state.setdefault('industry', 'Machinery')
 st.session_state.setdefault('revenue', 0)
 st.session_state.setdefault('opex', 0)
 st.session_state.setdefault('totale_attivo', 0)
 st.session_state.setdefault('dipendenti', 0)
 st.session_state.setdefault('quotata', False)
-st.session_state.setdefault('sector', '')
-st.session_state.setdefault('industry', '')
 st.session_state.setdefault('scope1', 0)
 st.session_state.setdefault('scope2', 0)
 st.session_state.setdefault('scope3', 0)
@@ -224,26 +241,15 @@ def check_cbam_category(cn_code):
     if cn.startswith(('7601', '7603', '7604', '7605', '7606', '7607', '7608', '7609')): return "Alluminio"
     return "Non Soggetto"
 
-# --- SIDEBAR GLOBALE (ACQUISIZIONE DATI) ---
+# --- SIDEBAR GLOBALE (ORDINATA) ---
 with st.sidebar:
     st.title("⚙️ Acquisizione Dati Base")
     
-    st.header("1. Inserimento Manuale")
-    st.selectbox("Paese Sede Legale", df_base['Paese'].unique(), index=3, key='selected_country') 
-    st.session_state.sector = st.text_input("Settore (es. Technology, Utilities)", value=st.session_state.sector)
-    st.session_state.industry = st.text_input("Industria (es. Software, Renewables)", value=st.session_state.industry)
-    st.session_state.totale_attivo = st.number_input("Attivo Patrimoniale (€)", value=st.session_state.totale_attivo, step=1000000)
-    st.session_state.revenue = st.number_input("Ricavi Netti / Turnover (€)", value=st.session_state.revenue, step=1000000)
-    st.session_state.dipendenti = st.number_input("Numero Dipendenti", value=st.session_state.dipendenti, step=10)
-    st.session_state.quotata = st.checkbox("Quotata su mercato europeo?", value=st.session_state.quotata)
-    st.session_state.capex_totale = st.number_input("CapEx Totale (€)", value=st.session_state.capex_totale, step=1000000)
-    st.session_state.opex = st.number_input("OpEx Totale (€)", value=st.session_state.opex, step=1000000)
-    
-    st.divider()
-    st.header("2. Sincronizzazione API (YFinance)")
+    # 1. YFINANCE (Automazione Standard)
+    st.header("1. Sincronizzazione API (YFinance)")
     ticker = st.text_input("Ticker Aziendale (es. ENEL.MI)")
     
-    if st.button("Sincronizza da Yahoo Finance"):
+    if st.button("Estrai Dati da Yahoo Finance"):
         with st.spinner("Ricerca dei dati nei server finanziari..."):
             if not ticker: 
                 st.warning("⚠️ Inserisci un Ticker valido.")
@@ -256,14 +262,14 @@ with st.sidebar:
                     
                     new_rev, new_assets, new_emps = None, None, None
                     new_opex, new_capex = None, None
-                    new_sector, new_industry = "", ""
+                    new_sec, new_ind = "", ""
                     
                     if info:
                         new_rev = info.get('totalRevenue')
                         new_assets = info.get('totalAssets')
                         new_emps = info.get('fullTimeEmployees')
-                        new_sector = info.get('sector', '')
-                        new_industry = info.get('industry', '')
+                        new_sec = info.get('sector', '')
+                        new_ind = info.get('industry', '')
 
                     if not fins.empty:
                         if not new_rev:
@@ -291,24 +297,58 @@ with st.sidebar:
                         st.session_state.dipendenti = int(new_emps) if new_emps else max(50, int(new_rev / 500000))
                         if new_opex and not pd.isna(new_opex): st.session_state.opex = int(new_opex)
                         if new_capex and not pd.isna(new_capex): st.session_state.capex_totale = int(new_capex)
-                        st.session_state.sector = new_sector
-                        st.session_state.industry = new_industry
                         st.session_state.quotata = True
                         
-                        st.success(f"✅ Dati finanziari (incluso Settore) estratti per {ticker.upper()}!")
+                        # Aggiunta dinamica al dizionario GICS se il settore/industria è nuovo
+                        if new_sec:
+                            if new_sec not in st.session_state.gics_sectors:
+                                st.session_state.gics_sectors[new_sec] = []
+                            if new_ind and new_ind not in st.session_state.gics_sectors[new_sec]:
+                                st.session_state.gics_sectors[new_sec].append(new_ind)
+                            st.session_state.sector = new_sec
+                            st.session_state.industry = new_ind
+                        
+                        st.success(f"✅ Dati finanziari e settoriali estratti per {ticker.upper()}!")
                         time.sleep(1.5)
                         st.rerun()
                     else:
                         st.warning("⚠️ Yahoo Finance non ha restituito dati utili.")
                 except Exception as e:
-                    st.error("❌ Connessione bloccata da Yahoo (Rate Limit).")
+                    st.error("❌ Connessione bloccata da Yahoo (Rate Limit). Usa Manuale o AI.")
 
     st.divider()
+    
+    # 2. MANUALE
+    st.header("2. Inserimento Manuale")
+    st.selectbox("Paese Sede Legale", df_base['Paese'].unique(), index=3, key='selected_country') 
+    
+    # Dropdown dinamici e connessi al Session State per Settore/Industria GICS
+    curr_sec_idx = list(st.session_state.gics_sectors.keys()).index(st.session_state.sector) if st.session_state.sector in st.session_state.gics_sectors else 0
+    sel_sec = st.selectbox("Settore GICS", list(st.session_state.gics_sectors.keys()), index=curr_sec_idx)
+    st.session_state.sector = sel_sec
+    
+    inds = st.session_state.gics_sectors[st.session_state.sector]
+    curr_ind_idx = inds.index(st.session_state.industry) if st.session_state.industry in inds else 0
+    sel_ind = st.selectbox("Industria Specifica", inds, index=curr_ind_idx)
+    st.session_state.industry = sel_ind
+    
+    st.session_state.totale_attivo = st.number_input("Attivo Patrimoniale (€)", value=st.session_state.totale_attivo, step=1000000)
+    st.session_state.revenue = st.number_input("Ricavi Netti / Turnover (€)", value=st.session_state.revenue, step=1000000)
+    st.session_state.dipendenti = st.number_input("Numero Dipendenti", value=st.session_state.dipendenti, step=10)
+    st.session_state.quotata = st.checkbox("Quotata su mercato europeo?", value=st.session_state.quotata)
+    st.session_state.capex_totale = st.number_input("CapEx Totale (€)", value=st.session_state.capex_totale, step=1000000)
+    st.session_state.opex = st.number_input("OpEx Totale (€)", value=st.session_state.opex, step=1000000)
+    
+    st.divider()
+
+    # 3. OPEN AI (Premium)
     st.header("3. AI Data Extraction (PDF)")
+    st.caption("👑 Riservato agli Utenti Premium (Costo API applicato)")
     api_key = st.text_input("OpenAI API Key (Opzionale)", type="password")
-    uploaded_pdf = st.file_uploader("Carica Bilancio (PDF)", type="pdf")
+    uploaded_pdf = st.file_uploader("Carica Bilancio CEE (PDF)", type="pdf")
+    
     if uploaded_pdf and st.button("Analizza con AI"):
-        with st.spinner("Estrazione dati con AI in corso..."):
+        with st.spinner("Elaborazione testo tramite AI in corso..."):
             if not api_key:
                 time.sleep(2)
                 st.session_state.totale_attivo = 32_000_000
@@ -316,7 +356,6 @@ with st.sidebar:
                 st.session_state.dipendenti = 310
                 st.session_state.opex = 40_000_000
                 st.session_state.capex_totale = 15_000_000
-                st.session_state.sector = "Manufacturing"
                 st.session_state.quotata = False
                 st.success("SIMULAZIONE AI COMPLETATA! Dati caricati.")
                 time.sleep(1)
@@ -326,7 +365,7 @@ with st.sidebar:
                     pdf_reader = PyPDF2.PdfReader(uploaded_pdf)
                     testo = "".join([page.extract_text() + "\n" for page in pdf_reader.pages[:15]])
                     client = OpenAI(api_key=api_key)
-                    prompt = f"""Estrai come JSON: "attivo" (intero), "revenue" (intero), "dipendenti" (intero), "opex" (intero), "capex" (intero), "sector" (stringa). Testo: {testo[:15000]}"""
+                    prompt = f"""Estrai come JSON: "attivo" (intero), "revenue" (intero), "dipendenti" (intero), "opex" (intero), "capex" (intero), "sector" (stringa in inglese es. Energy). Testo: {testo[:15000]}"""
                     res = client.chat.completions.create(model="gpt-3.5-turbo-0125", messages=[{"role": "user", "content": prompt}], response_format={ "type": "json_object" })
                     dati = json.loads(res.choices[0].message.content)
                     st.session_state.totale_attivo = dati.get("attivo", 0)
@@ -334,7 +373,13 @@ with st.sidebar:
                     st.session_state.dipendenti = dati.get("dipendenti", 0)
                     st.session_state.opex = dati.get("opex", 0)
                     st.session_state.capex_totale = dati.get("capex", 0)
-                    st.session_state.sector = dati.get("sector", "")
+                    
+                    new_sec = dati.get("sector", "")
+                    if new_sec:
+                        if new_sec not in st.session_state.gics_sectors: st.session_state.gics_sectors[new_sec] = ["Generico"]
+                        st.session_state.sector = new_sec
+                        st.session_state.industry = st.session_state.gics_sectors[new_sec][0]
+                        
                     st.success("Dati estratti dal PDF!")
                     time.sleep(1)
                     st.rerun()
@@ -361,7 +406,7 @@ with t_triage:
     soglia_dip = st.session_state.dipendenti > 250
     score_grandi = sum([soglia_attivo, soglia_ricavi, soglia_dip])
     
-    st.info(f"**Dati Attuali:** Attivo: {st.session_state.totale_attivo/1e6:.1f}M € | Ricavi: {st.session_state.revenue/1e6:.1f}M € | Dipendenti: {st.session_state.dipendenti} | Quotata: {'Sì' if st.session_state.quotata else 'No'} | Settore: {st.session_state.sector}")
+    st.info(f"**Dati Attuali:** Attivo: {st.session_state.totale_attivo/1e6:.1f}M € | Ricavi: {st.session_state.revenue/1e6:.1f}M € | Dipendenti: {st.session_state.dipendenti} | Quotata: {'Sì' if st.session_state.quotata else 'No'} | Settore: {st.session_state.sector} - {st.session_state.industry}")
     
     if score_grandi >= 2:
         status_normativo = "CSRD_GRANDE"
