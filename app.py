@@ -23,6 +23,8 @@ st.session_state.setdefault('opex', 0)
 st.session_state.setdefault('totale_attivo', 0)
 st.session_state.setdefault('dipendenti', 0)
 st.session_state.setdefault('quotata', False)
+st.session_state.setdefault('sector', '')
+st.session_state.setdefault('industry', '')
 st.session_state.setdefault('scope1', 0)
 st.session_state.setdefault('scope2', 0)
 st.session_state.setdefault('scope3', 0)
@@ -228,6 +230,8 @@ with st.sidebar:
     
     st.header("1. Inserimento Manuale")
     st.selectbox("Paese Sede Legale", df_base['Paese'].unique(), index=3, key='selected_country') 
+    st.session_state.sector = st.text_input("Settore (es. Technology, Utilities)", value=st.session_state.sector)
+    st.session_state.industry = st.text_input("Industria (es. Software, Renewables)", value=st.session_state.industry)
     st.session_state.totale_attivo = st.number_input("Attivo Patrimoniale (€)", value=st.session_state.totale_attivo, step=1000000)
     st.session_state.revenue = st.number_input("Ricavi Netti / Turnover (€)", value=st.session_state.revenue, step=1000000)
     st.session_state.dipendenti = st.number_input("Numero Dipendenti", value=st.session_state.dipendenti, step=10)
@@ -252,11 +256,14 @@ with st.sidebar:
                     
                     new_rev, new_assets, new_emps = None, None, None
                     new_opex, new_capex = None, None
+                    new_sector, new_industry = "", ""
                     
                     if info:
                         new_rev = info.get('totalRevenue')
                         new_assets = info.get('totalAssets')
                         new_emps = info.get('fullTimeEmployees')
+                        new_sector = info.get('sector', '')
+                        new_industry = info.get('industry', '')
 
                     if not fins.empty:
                         if not new_rev:
@@ -284,9 +291,11 @@ with st.sidebar:
                         st.session_state.dipendenti = int(new_emps) if new_emps else max(50, int(new_rev / 500000))
                         if new_opex and not pd.isna(new_opex): st.session_state.opex = int(new_opex)
                         if new_capex and not pd.isna(new_capex): st.session_state.capex_totale = int(new_capex)
+                        st.session_state.sector = new_sector
+                        st.session_state.industry = new_industry
                         st.session_state.quotata = True
                         
-                        st.success(f"✅ Dati finanziari completi estratti per {ticker.upper()}!")
+                        st.success(f"✅ Dati finanziari (incluso Settore) estratti per {ticker.upper()}!")
                         time.sleep(1.5)
                         st.rerun()
                     else:
@@ -307,6 +316,7 @@ with st.sidebar:
                 st.session_state.dipendenti = 310
                 st.session_state.opex = 40_000_000
                 st.session_state.capex_totale = 15_000_000
+                st.session_state.sector = "Manufacturing"
                 st.session_state.quotata = False
                 st.success("SIMULAZIONE AI COMPLETATA! Dati caricati.")
                 time.sleep(1)
@@ -316,7 +326,7 @@ with st.sidebar:
                     pdf_reader = PyPDF2.PdfReader(uploaded_pdf)
                     testo = "".join([page.extract_text() + "\n" for page in pdf_reader.pages[:15]])
                     client = OpenAI(api_key=api_key)
-                    prompt = f"""Estrai come JSON: "attivo" (intero), "revenue" (intero), "dipendenti" (intero), "opex" (intero), "capex" (intero). Testo: {testo[:15000]}"""
+                    prompt = f"""Estrai come JSON: "attivo" (intero), "revenue" (intero), "dipendenti" (intero), "opex" (intero), "capex" (intero), "sector" (stringa). Testo: {testo[:15000]}"""
                     res = client.chat.completions.create(model="gpt-3.5-turbo-0125", messages=[{"role": "user", "content": prompt}], response_format={ "type": "json_object" })
                     dati = json.loads(res.choices[0].message.content)
                     st.session_state.totale_attivo = dati.get("attivo", 0)
@@ -324,6 +334,7 @@ with st.sidebar:
                     st.session_state.dipendenti = dati.get("dipendenti", 0)
                     st.session_state.opex = dati.get("opex", 0)
                     st.session_state.capex_totale = dati.get("capex", 0)
+                    st.session_state.sector = dati.get("sector", "")
                     st.success("Dati estratti dal PDF!")
                     time.sleep(1)
                     st.rerun()
@@ -338,7 +349,7 @@ t_triage, t_rischi, t_tax, t_cbam, t_down = st.tabs([
 ])
 
 # =====================================================================
-# TAB 0: TRIAGE NORMATIVO, GAP ANALYSIS E DOPPIA MATERIALITÀ
+# TAB 0: TRIAGE NORMATIVO E GAP ANALYSIS
 # =====================================================================
 with t_triage:
     st.header("🧭 1. Test di Assoggettabilità")
@@ -350,7 +361,7 @@ with t_triage:
     soglia_dip = st.session_state.dipendenti > 250
     score_grandi = sum([soglia_attivo, soglia_ricavi, soglia_dip])
     
-    st.info(f"**Dati Attuali:** Attivo: {st.session_state.totale_attivo/1e6:.1f}M € | Ricavi: {st.session_state.revenue/1e6:.1f}M € | Dipendenti: {st.session_state.dipendenti} | Quotata: {'Sì' if st.session_state.quotata else 'No'}")
+    st.info(f"**Dati Attuali:** Attivo: {st.session_state.totale_attivo/1e6:.1f}M € | Ricavi: {st.session_state.revenue/1e6:.1f}M € | Dipendenti: {st.session_state.dipendenti} | Quotata: {'Sì' if st.session_state.quotata else 'No'} | Settore: {st.session_state.sector}")
     
     if score_grandi >= 2:
         status_normativo = "CSRD_GRANDE"
