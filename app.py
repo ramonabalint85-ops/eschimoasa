@@ -37,6 +37,7 @@ if 'gics_sectors' not in st.session_state:
 # --- SINCRONIZZAZIONE (Session State) ---
 st.session_state.setdefault('sector', 'Industrials')
 st.session_state.setdefault('industry', 'Machinery')
+st.session_state.setdefault('selected_country', 'Italia')
 st.session_state.setdefault('revenue', 0)
 st.session_state.setdefault('opex', 0)
 st.session_state.setdefault('totale_attivo', 0)
@@ -241,16 +242,84 @@ def check_cbam_category(cn_code):
     if cn.startswith(('7601', '7603', '7604', '7605', '7606', '7607', '7608', '7609')): return "Alluminio"
     return "Non Soggetto"
 
-# --- SIDEBAR GLOBALE (ORDINATA) ---
+# --- FUNZIONE MAPPA RISCHIO FISICO CENTRALINE CSV ---
+@st.cache_data
+def load_plants_csv():
+    file_path = "it_en centrali produzione energia.xls - Sheet1.csv"
+    if not os.path.exists(file_path):
+        return pd.DataFrame()
+    
+    try:
+        df = pd.read_csv(file_path, skiprows=1)
+        df = df.dropna(subset=['Operator', 'Installation name', 'Address'])
+        df['Allocation'] = pd.to_numeric(df['Allocation total (per installation) '], errors='coerce').fillna(1000)
+        
+        # Geocodifica Approssimativa sulle province per velocità UI
+        prov_dict = {
+            'TO': (45.07, 7.68), 'VC': (45.32, 8.42), 'NO': (45.32, 8.42), 'CN': (44.38, 7.54),
+            'AT': (44.90, 8.20), 'AL': (44.91, 8.61), 'BI': (45.32, 8.42), 'VB': (45.92, 8.55),
+            'AO': (45.73, 8.32), 'MI': (45.46, 9.19), 'BG': (45.69, 9.67), 'BS': (45.54, 10.21),
+            'CO': (45.80, 9.08), 'CR': (45.13, 10.02), 'MN': (45.13, 10.02), 'LC': (43.84, 10.50), 
+            'LO': (45.85, 9.39), 'MB': (45.15, 10.79), 'PV': (45.31, 9.50), 'SO': (46.17, 9.87), 
+            'VA': (45.82, 8.82), 'BZ': (46.49, 11.35), 'TN': (46.06, 11.12), 'VR': (45.43, 10.99), 
+            'VI': (45.54, 11.53), 'BL': (46.14, 12.21), 'TV': (45.66, 12.24), 'VE': (45.43, 12.33), 
+            'PD': (45.40, 11.87), 'RO': (45.07, 11.79), 'UD': (45.40, 11.87), 'PN': (45.95, 12.66), 
+            'GO': (45.94, 13.62), 'TS': (45.64, 13.77), 'GE': (44.40, 8.94), 'SV': (44.30, 8.48), 
+            'IM': (44.30, 8.48), 'SP': (44.10, 9.82), 'PR': (44.80, 10.32), 'PC': (44.80, 10.32), 
+            'RE': (44.69, 10.63), 'MO': (45.15, 10.79), 'BO': (44.49, 11.34), 'FE': (44.83, 11.61), 
+            'RA': (44.41, 12.19), 'FC': (44.83, 11.61), 'RN': (44.06, 12.56), 'FI': (43.76, 11.25), 
+            'MS': (44.03, 10.13), 'LU': (43.84, 10.50), 'PI': (43.71, 10.40), 'LI': (43.71, 10.40), 
+            'AR': (43.46, 11.88), 'SI': (43.31, 11.33), 'GR': (42.76, 11.11), 'PG': (43.11, 12.39), 
+            'TR': (42.56, 12.64), 'PU': (43.91, 12.91), 'AN': (43.61, 13.51), 'MC': (43.30, 13.45), 
+            'AP': (42.85, 13.57), 'RM': (41.90, 12.49), 'VT': (42.42, 11.87), 'RI': (42.42, 11.87), 
+            'FR': (41.64, 13.34), 'LT': (41.46, 12.90), 'AQ': (42.35, 13.39), 'TE': (42.66, 13.70), 
+            'PE': (42.46, 14.21), 'CH': (41.34, 14.37), 'CB': (41.56, 14.66), 'IS': (41.59, 14.23), 
+            'NA': (40.85, 14.26), 'CE': (41.07, 14.33), 'BN': (41.11, 14.78), 'AV': (40.91, 14.78), 
+            'SA': (40.68, 14.76), 'FG': (41.46, 15.54), 'BA': (41.11, 16.87), 'TA': (40.47, 17.24), 
+            'BR': (40.63, 17.93), 'LE': (40.35, 18.17), 'MT': (40.66, 16.60), 'PZ': (40.63, 15.80), 
+            'CS': (39.30, 16.25), 'CZ': (39.30, 16.25), 'KR': (38.90, 16.59), 'VV': (38.67, 16.10), 
+            'RC': (38.11, 15.64), 'PA': (38.11, 13.36), 'TP': (38.01, 12.53), 'AG': (37.31, 13.58), 
+            'CL': (37.49, 14.06), 'EN': (37.56, 14.27), 'CT': (37.50, 15.09), 'SR': (37.07, 15.28), 
+            'RG': (37.07, 15.28), 'ME': (38.19, 15.55), 'CA': (39.22, 9.11),  'SS': (40.72, 8.55),  
+            'NU': (40.32, 9.32),  'OR': (39.90, 8.58),  'SU': (40.72, 8.55)
+        }
+        
+        lats, lons, risks = [], [], []
+        
+        for i, row in df.iterrows():
+            addr = str(row['Address'])
+            match = re.search(r'\(([A-Z]{2})\)', addr)
+            prov = match.group(1) if match else None
+            
+            base_lat, base_lon = prov_dict.get(prov, (41.87, 12.56))
+            
+            # Leggera dispersione (jitter) per evitare sovrapposizioni assolute
+            np.random.seed(hash(str(row['Installation ID'])) % (2**32))
+            lats.append(base_lat + np.random.uniform(-0.15, 0.15))
+            lons.append(base_lon + np.random.uniform(-0.15, 0.15))
+            
+            # Calcolo Risk Score simulato (Sud Italia / Coste = Più a rischio idrogeologico/termico)
+            risk = int(np.clip(100 - (base_lat - 36) * 7 + np.random.randint(-10, 20), 10, 100))
+            risks.append(risk)
+            
+        df['Lat'] = lats
+        df['Lon'] = lons
+        df['Risk_Score'] = risks
+        return df
+    except:
+        return pd.DataFrame()
+
+
+# --- SIDEBAR GLOBALE (ACQUISIZIONE DATI ORDINATA) ---
 with st.sidebar:
     st.title("⚙️ Acquisizione Dati Base")
     
-    # 1. YFINANCE (Automazione Standard)
+    # 1. YFINANCE
     st.header("1. Sincronizzazione API (YFinance)")
     ticker = st.text_input("Ticker Aziendale (es. ENEL.MI)")
     
     if st.button("Estrai Dati da Yahoo Finance"):
-        with st.spinner("Ricerca dei dati nei server finanziari..."):
+        with st.spinner("Scaricando dati dal mercato..."):
             if not ticker: 
                 st.warning("⚠️ Inserisci un Ticker valido.")
             else:
@@ -262,7 +331,7 @@ with st.sidebar:
                     
                     new_rev, new_assets, new_emps = None, None, None
                     new_opex, new_capex = None, None
-                    new_sec, new_ind = "", ""
+                    new_sec, new_ind, new_country = "", "", ""
                     
                     if info:
                         new_rev = info.get('totalRevenue')
@@ -270,6 +339,7 @@ with st.sidebar:
                         new_emps = info.get('fullTimeEmployees')
                         new_sec = info.get('sector', '')
                         new_ind = info.get('industry', '')
+                        new_country = info.get('country', '')
 
                     if not fins.empty:
                         if not new_rev:
@@ -299,7 +369,6 @@ with st.sidebar:
                         if new_capex and not pd.isna(new_capex): st.session_state.capex_totale = int(new_capex)
                         st.session_state.quotata = True
                         
-                        # Aggiunta dinamica al dizionario GICS se il settore/industria è nuovo
                         if new_sec:
                             if new_sec not in st.session_state.gics_sectors:
                                 st.session_state.gics_sectors[new_sec] = []
@@ -307,22 +376,26 @@ with st.sidebar:
                                 st.session_state.gics_sectors[new_sec].append(new_ind)
                             st.session_state.sector = new_sec
                             st.session_state.industry = new_ind
+                            
+                        if new_country:
+                            cmap = {'Italy': 'Italia', 'United States': 'Stati Uniti', 'China': 'Cina', 'Germany': 'Germania', 'India': 'India'}
+                            if new_country in cmap:
+                                st.session_state.selected_country = cmap[new_country]
                         
-                        st.success(f"✅ Dati finanziari e settoriali estratti per {ticker.upper()}!")
+                        st.success(f"✅ Dati finanziari, settore e paese estratti per {ticker.upper()}!")
                         time.sleep(1.5)
                         st.rerun()
                     else:
                         st.warning("⚠️ Yahoo Finance non ha restituito dati utili.")
                 except Exception as e:
-                    st.error("❌ Connessione bloccata da Yahoo (Rate Limit). Usa Manuale o AI.")
+                    st.error("❌ Connessione bloccata da Yahoo (Rate Limit).")
 
     st.divider()
     
     # 2. MANUALE
     st.header("2. Inserimento Manuale")
-    st.selectbox("Paese Sede Legale", df_base['Paese'].unique(), index=3, key='selected_country') 
+    st.selectbox("Paese Sede Legale", df_base['Paese'].unique(), key='selected_country') 
     
-    # Dropdown dinamici e connessi al Session State per Settore/Industria GICS
     curr_sec_idx = list(st.session_state.gics_sectors.keys()).index(st.session_state.sector) if st.session_state.sector in st.session_state.gics_sectors else 0
     sel_sec = st.selectbox("Settore GICS", list(st.session_state.gics_sectors.keys()), index=curr_sec_idx)
     st.session_state.sector = sel_sec
@@ -341,7 +414,7 @@ with st.sidebar:
     
     st.divider()
 
-    # 3. OPEN AI (Premium)
+    # 3. OPEN AI
     st.header("3. AI Data Extraction (PDF)")
     st.caption("👑 Riservato agli Utenti Premium (Costo API applicato)")
     api_key = st.text_input("OpenAI API Key (Opzionale)", type="password")
@@ -386,11 +459,12 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Errore AI: {e}")
 
+
 # --- CORPO PRINCIPALE E TABS ---
 st.title("🌍 CarbonRisk AI Enterprise")
 
 t_triage, t_rischi, t_tax, t_cbam, t_down = st.tabs([
-    "🧭 Triage, Gap & Materialità", "📊 Analisi Rischi (IPCC)", "🇪🇺 Tassonomia UE", "🌍 CBAM (Dogana)", "📥 Report & Export"
+    "🧭 Triage, Gap & Materialità", "📊 Analisi Rischi (IPCC & Mappa)", "🇪🇺 Tassonomia UE", "🌍 CBAM (Dogana)", "📥 Report & Export"
 ])
 
 # =====================================================================
@@ -406,7 +480,7 @@ with t_triage:
     soglia_dip = st.session_state.dipendenti > 250
     score_grandi = sum([soglia_attivo, soglia_ricavi, soglia_dip])
     
-    st.info(f"**Dati Attuali:** Attivo: {st.session_state.totale_attivo/1e6:.1f}M € | Ricavi: {st.session_state.revenue/1e6:.1f}M € | Dipendenti: {st.session_state.dipendenti} | Quotata: {'Sì' if st.session_state.quotata else 'No'} | Settore: {st.session_state.sector} - {st.session_state.industry}")
+    st.info(f"**Dati Attuali:** Attivo: {st.session_state.totale_attivo/1e6:.1f}M € | Ricavi: {st.session_state.revenue/1e6:.1f}M € | Dipendenti: {st.session_state.dipendenti} | Quotata: {'Sì' if st.session_state.quotata else 'No'} | Settore: {st.session_state.sector} - {st.session_state.industry} | Paese: {st.session_state.selected_country}")
     
     if score_grandi >= 2:
         status_normativo = "CSRD_GRANDE"
@@ -701,11 +775,36 @@ with t_triage:
                 st.info("Compila i questionari nei tab (E, S, G) per generare la matrice.")
 
 # =====================================================================
-# TAB 2: ANALISI RISCHI (IPCC, NGFS, FATTORI DI EMISSIONE)
+# TAB 2: ANALISI RISCHI E MAPPATURA ASSET
 # =====================================================================
 with t_rischi:
-    rt_fisico, rt_transizione, rt_credito = st.tabs(["🛰️ Rischio Fisico (IPCC)", "🔄 Rischio di Transizione (GHG)", "💰 Stress Test Finanziario (NGFS)"])
+    rt_mappa, rt_fisico, rt_transizione, rt_credito = st.tabs([
+        "🏭 Mappatura Asset", "🛰️ Simulazione Geospaziale", "🔄 GHG & Consumi", "💰 Stress Test (NGFS)"
+    ])
     
+    with rt_mappa:
+        st.subheader("Mappatura Rischio Impianti Energetici")
+        st.markdown("Visualizzazione centrali dal database. Il colore rappresenta la stima di rischio, la dimensione l'allocazione.")
+        
+        df_plants = load_plants_csv()
+        if not df_plants.empty:
+            operatori = ["Tutti"] + sorted(df_plants['Operator'].unique().tolist())
+            selezionato = st.selectbox("Filtra mappa per Operatore:", operatori)
+            
+            df_mappa = df_plants if selezionato == "Tutti" else df_plants[df_plants['Operator'] == selezionato]
+            
+            fig_map = px.scatter_mapbox(
+                df_mappa, lat="Lat", lon="Lon", hover_name="Installation name",
+                hover_data={"Lat": False, "Lon": False, "Installation ID": True, "Address": True, "Risk_Score": True, "Allocation": True},
+                color="Risk_Score", size="Allocation", color_continuous_scale=px.colors.diverging.RdYlGn_r,
+                size_max=15, zoom=4.5, mapbox_style="carto-positron"
+            )
+            fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+            st.plotly_chart(fig_map, use_container_width=True)
+            st.dataframe(df_mappa[['Installation ID', 'Installation name', 'Operator', 'Address', 'Risk_Score']], use_container_width=True)
+        else:
+            st.warning("⚠️ Carica il file CSV degli impianti nel sistema per visualizzare la mappa.")
+
     with rt_fisico:
         st.subheader("Modellazione Climatica ERA5 (10km) & Scenari IPCC 2050")
         col_f1, col_f2 = st.columns(2)
@@ -714,16 +813,16 @@ with t_rischi:
         with col_f2:
             ipcc_scenario = st.selectbox("Scenario IPCC (Orizzonte 2050)", ["SSP1-2.6 (Sostenibilità)", "SSP2-4.5 (Intermedio)", "SSP5-8.5 (Fossile)"], index=1)
             
-        if st.button("📡 Esegui Simulazione Geospaziale"):
+        if st.button("📡 Esegui Simulazione"):
             with st.spinner("Interrogazione satellite Copernicus..."):
                 geolocator = Nominatim(user_agent="CarbonApp")
                 try:
                     loc = geolocator.geocode(indirizzo)
                     lat, lon = (loc.latitude, loc.longitude) if loc else (41.90, 12.49)
                     
-                    fig_map = px.scatter_mapbox(pd.DataFrame({"Lat":[lat],"Lon":[lon],"L":["Asset"]}), lat="Lat", lon="Lon", zoom=12, height=300)
-                    fig_map.update_layout(mapbox_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0})
-                    st.plotly_chart(fig_map, use_container_width=True)
+                    fig_map_singolo = px.scatter_mapbox(pd.DataFrame({"Lat":[lat],"Lon":[lon],"L":["Asset"]}), lat="Lat", lon="Lon", zoom=12, height=300)
+                    fig_map_singolo.update_layout(mapbox_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0})
+                    st.plotly_chart(fig_map_singolo, use_container_width=True)
                     
                     url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date=2023-01-01&end_date=2023-12-31&daily=temperature_2m_max,precipitation_sum&timezone=auto"
                     data = requests.get(url).json()
@@ -752,43 +851,39 @@ with t_rischi:
                 except: st.error("Errore di geolocalizzazione.")
 
     with rt_transizione:
-        st.subheader("1. Protocollo GHG (Inventario Emissioni)")
+        st.subheader("Calcolatore GHG da Consumi Reali (ISPRA/DEFRA)")
         
-        with st.expander("🧮 Calcolatore da Consumi Reali (Database ISPRA/DEFRA)", expanded=True):
-            EMISSION_FACTORS = {
-                "Scope 1 - Gas Naturale (Riscaldamento)": {"scope": "scope1", "unita": {"Metri Cubi (Sm3)": 1.98, "GigaJoule (GJ)": 56.1}},
-                "Scope 1 - Gasolio (Riscaldamento/Motori)": {"scope": "scope1", "unita": {"Litri (L)": 2.68, "Tonnellate (t)": 3150.0}},
-                "Scope 1 - Carbone (Produzione energia)": {"scope": "scope1", "unita": {"Tonnellate (t)": 2335.0, "Chilogrammi (kg)": 2.335}},
-                "Scope 1 - Benzina (Flotta)": {"scope": "scope1", "unita": {"Litri (L)": 2.31}},
-                "Scope 1 - Gas Refrigeranti (Fughe R410a)": {"scope": "scope1", "unita": {"Chilogrammi (kg)": 2088.0}},
-                "Scope 2 - Elettricità (Mix Italia)": {"scope": "scope2", "unita": {"kWh": 0.259, "MWh": 259.0}},
-                "Scope 2 - Elettricità (100% Rinnovabile GO)": {"scope": "scope2", "unita": {"kWh": 0.0, "MWh": 0.0}},
-                "Scope 3 - Trasporto Merci (Camion)": {"scope": "scope3", "unita": {"Tonnellate-km (tkm)": 0.11}},
-                "Scope 3 - Voli Aerei (Passeggeri)": {"scope": "scope3", "unita": {"Passeggeri-km (pkm)": 0.15}},
-                "Scope 3 - Rifiuti Indifferenziati": {"scope": "scope3", "unita": {"Tonnellate (t)": 450.0}}
-            }
-            
-            c_calc1, c_calc2, c_calc3 = st.columns([2, 1, 1])
-            fonte_sel = c_calc1.selectbox("Categoria Consumo", list(EMISSION_FACTORS.keys()))
-            
-            unita_disp = list(EMISSION_FACTORS[fonte_sel]["unita"].keys())
-            unita_sel = c_calc2.selectbox("Unità di Misura", unita_disp)
-            
-            fattore = EMISSION_FACTORS[fonte_sel]["unita"][unita_sel]
-            scope_target = EMISSION_FACTORS[fonte_sel]["scope"]
-            
-            consumo = c_calc1.number_input(f"Volume Annuo ({unita_sel})", min_value=0.0, step=100.0)
-            co2_calc = (consumo * fattore) / 1000 
-            
-            c_calc3.metric("Emissioni Generate", f"{co2_calc:,.2f} tCO2", help=f"Fattore: {fattore} kgCO2/{unita_sel}")
-            
-            if st.button(f"➕ Somma allo {scope_target.capitalize()}"):
-                if co2_calc > 0:
-                    st.session_state[scope_target] += int(co2_calc)
-                    sync_from_scopes()
-                    st.success(f"Aggiunte {int(co2_calc)} tCO2!")
-                    time.sleep(1)
-                    st.rerun()
+        EMISSION_FACTORS = {
+            "Scope 1 - Gas Naturale (Riscaldamento)": {"scope": "scope1", "unita": {"Metri Cubi (Sm3)": 1.98, "GigaJoule (GJ)": 56.1}},
+            "Scope 1 - Gasolio (Riscaldamento/Motori)": {"scope": "scope1", "unita": {"Litri (L)": 2.68, "Tonnellate (t)": 3150.0}},
+            "Scope 1 - Carbone (Produzione energia)": {"scope": "scope1", "unita": {"Tonnellate (t)": 2335.0, "Chilogrammi (kg)": 2.335}},
+            "Scope 1 - Benzina (Flotta)": {"scope": "scope1", "unita": {"Litri (L)": 2.31}},
+            "Scope 1 - Gas Refrigeranti (Fughe R410a)": {"scope": "scope1", "unita": {"Chilogrammi (kg)": 2088.0}},
+            "Scope 2 - Elettricità (Mix Italia)": {"scope": "scope2", "unita": {"kWh": 0.259, "MWh": 259.0}},
+            "Scope 2 - Elettricità (100% Rinnovabile GO)": {"scope": "scope2", "unita": {"kWh": 0.0, "MWh": 0.0}},
+            "Scope 3 - Trasporto Merci (Camion)": {"scope": "scope3", "unita": {"Tonnellate-km (tkm)": 0.11}},
+            "Scope 3 - Voli Aerei (Passeggeri)": {"scope": "scope3", "unita": {"Passeggeri-km (pkm)": 0.15}},
+            "Scope 3 - Rifiuti Indifferenziati": {"scope": "scope3", "unita": {"Tonnellate (t)": 450.0}}
+        }
+        
+        c_calc1, c_calc2, c_calc3 = st.columns([2, 1, 1])
+        fonte_sel = c_calc1.selectbox("Categoria Consumo", list(EMISSION_FACTORS.keys()))
+        unita_disp = list(EMISSION_FACTORS[fonte_sel]["unita"].keys())
+        unita_sel = c_calc2.selectbox("Unità di Misura", unita_disp)
+        fattore = EMISSION_FACTORS[fonte_sel]["unita"][unita_sel]
+        scope_target = EMISSION_FACTORS[fonte_sel]["scope"]
+        consumo = c_calc1.number_input(f"Volume Annuo ({unita_sel})", min_value=0.0, step=100.0)
+        co2_calc = (consumo * fattore) / 1000 
+        
+        c_calc3.metric("Emissioni Generate", f"{co2_calc:,.2f} tCO2", help=f"Fattore: {fattore} kgCO2/{unita_sel}")
+        
+        if st.button(f"➕ Somma allo {scope_target.capitalize()}"):
+            if co2_calc > 0:
+                st.session_state[scope_target] += int(co2_calc)
+                sync_from_scopes()
+                st.success(f"Aggiunte {int(co2_calc)} tCO2!")
+                time.sleep(1)
+                st.rerun()
 
         st.divider()
         c_ghg1, c_ghg2 = st.columns(2)
