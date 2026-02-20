@@ -223,26 +223,50 @@ with st.sidebar:
     st.divider()
     st.header("2. Sincronizzazione API (Mercato)")
     ticker = st.text_input("Ticker Yahoo Finance (es. ENEL.MI)")
+    
     if st.button("Sincronizza da Yahoo Finance"):
-        with st.spinner("Connessione in corso..."):
+        with st.spinner("Connessione ai server finanziari in corso..."):
             if not ticker: 
-                st.warning("Inserisci un Ticker.")
+                st.warning("⚠️ Inserisci un Ticker valido prima di sincronizzare.")
             else:
                 try:
                     stock = yf.Ticker(ticker)
-                    info = stock.info
-                    if info and 'totalRevenue' in info:
-                        st.session_state.revenue = int(info.get('totalRevenue'))
-                        st.session_state.totale_attivo = int(info.get('totalAssets', st.session_state.revenue * 1.5))
-                        st.session_state.dipendenti = int(info.get('fullTimeEmployees', 1000))
+                    
+                    new_rev = None
+                    new_assets = None
+                    new_employees = None
+                    
+                    # Tentativo 1: Metodo standard (.info)
+                    try:
+                        info = stock.info
+                        if info:
+                            new_rev = info.get('totalRevenue')
+                            new_assets = info.get('totalAssets')
+                            new_employees = info.get('fullTimeEmployees')
+                    except:
+                        pass # Ignora l'errore e passa al piano B
+                        
+                    # Tentativo 2: Metodo bilanci (.financials) se .info è bloccato
+                    if not new_rev:
+                        fins = stock.financials
+                        if not fins.empty and 'Total Revenue' in fins.index:
+                            new_rev = fins.loc['Total Revenue'].dropna().iloc[0]
+                    
+                    # Se abbiamo trovato almeno i ricavi, aggiorniamo il sistema
+                    if new_rev:
+                        st.session_state.revenue = int(new_rev)
+                        # Se mancano attivo o dipendenti, facciamo una stima proporzionale
+                        st.session_state.totale_attivo = int(new_assets) if new_assets else int(new_rev * 1.5)
+                        st.session_state.dipendenti = int(new_employees) if new_employees else max(50, int(new_rev / 500000))
                         st.session_state.quotata = True
-                        st.success("Dati aggiornati dal mercato!")
-                        time.sleep(1)
+                        st.success(f"✅ Dati estratti con successo per {ticker.upper()}!")
+                        time.sleep(1.5)
                         st.rerun()
                     else:
-                        st.warning("Dati non disponibili per questo Ticker.")
+                        st.warning(f"⚠️ Yahoo Finance non ha fornito dati per il ticker '{ticker}'. Potrebbe essere errato o delistato.")
+                        
                 except Exception as e:
-                    st.error("Errore di connessione API.")
+                    st.error("❌ Errore API: Yahoo Finance ha bloccato la connessione (Rate Limit) o il servizio è temporaneamente offline. Inserisci i dati manualmente o usa l'AI.")
 
     st.divider()
     st.header("3. AI Data Extraction (Bilanci PDF)")
