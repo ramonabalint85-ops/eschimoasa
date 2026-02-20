@@ -37,7 +37,6 @@ if 'tax_portfolio' not in st.session_state: st.session_state.tax_portfolio = []
 if 'cbam_portfolio' not in st.session_state: st.session_state.cbam_portfolio = [] 
 if 'gap_answers' not in st.session_state: st.session_state.gap_answers = {}
 
-# Inizializzazione punteggi Doppia Materialità
 if 'materiality_scores' not in st.session_state:
     st.session_state.materiality_scores = {
         "E1 - Cambiamento Climatico": {"pilastro": "E", "impatto": 1, "finanza": 1},
@@ -55,9 +54,6 @@ if 'materiality_scores' not in st.session_state:
 def get_tot_emissions(): return st.session_state.scope1 + st.session_state.scope2 + st.session_state.scope3
 def sync_from_perc(): st.session_state.em_final = int(get_tot_emissions() * (1 - st.session_state.perc_red / 100.0))
 def sync_from_scopes(): sync_from_perc()
-
-def sync_revenue_from_triage():
-    st.session_state.revenue = st.session_state.rev_triage_widget
 
 # --- MOTORE DATI, PREZZI LIVE E TASSONOMIA ---
 @st.cache_data(ttl=3600)
@@ -211,78 +207,122 @@ def check_cbam_category(cn_code):
     if cn.startswith(('7601', '7603', '7604', '7605', '7606', '7607', '7608', '7609')): return "Alluminio"
     return "Non Soggetto"
 
-# --- SIDEBAR GLOBALE ---
+# --- SIDEBAR GLOBALE (ORDINATA SECONDO RICHIESTA) ---
 with st.sidebar:
-    st.title("⚙️ Dati Baseline Aziendali")
-    st.selectbox("Paese Sede Legale", df_base['Paese'].unique(), index=3, key='selected_country') 
-    st.number_input("Ricavi (Turnover) €", value=st.session_state.revenue, step=1_000_000, key='revenue', help="Sincronizzato col Triage")
-    st.number_input("CapEx Totale €", value=st.session_state.capex_totale, step=1_000_000, key='capex_totale')
-    st.number_input("OpEx Totale €", value=st.session_state.opex, step=1_000_000, key='opex')
+    st.title("⚙️ Acquisizione Dati Aziendali")
     
-    if st.session_state.sbti_approved:
-        st.markdown("🎯 **Status:** `✅ Target SBTi Approvato`")
+    st.header("1. Inserimento Manuale")
+    st.selectbox("Paese Sede Legale", df_base['Paese'].unique(), index=3, key='selected_country') 
+    st.session_state.totale_attivo = st.number_input("Totale Attivo Stato Patrimoniale (€)", value=st.session_state.totale_attivo, step=1000000)
+    st.session_state.revenue = st.number_input("Ricavi Netti / Turnover (€)", value=st.session_state.revenue, step=1000000)
+    st.session_state.dipendenti = st.number_input("Numero Medio Dipendenti", value=st.session_state.dipendenti, step=10)
+    st.session_state.quotata = st.checkbox("Società quotata su mercato regolamentato?", value=st.session_state.quotata)
+    st.session_state.capex_totale = st.number_input("CapEx Totale (€)", value=st.session_state.capex_totale, step=1000000)
+    st.session_state.opex = st.number_input("OpEx Totale (€)", value=st.session_state.opex, step=1000000)
+    
+    st.divider()
+    st.header("2. Sincronizzazione API (Mercato)")
+    ticker = st.text_input("Ticker Yahoo Finance (es. ENEL.MI)")
+    if st.button("Sincronizza da Yahoo Finance"):
+        with st.spinner("Connessione in corso..."):
+            if not ticker: 
+                st.warning("Inserisci un Ticker.")
+            else:
+                try:
+                    stock = yf.Ticker(ticker)
+                    info = stock.info
+                    if info and 'totalRevenue' in info:
+                        st.session_state.revenue = int(info.get('totalRevenue'))
+                        st.session_state.totale_attivo = int(info.get('totalAssets', st.session_state.revenue * 1.5))
+                        st.session_state.dipendenti = int(info.get('fullTimeEmployees', 1000))
+                        st.session_state.quotata = True
+                        st.success("Dati aggiornati dal mercato!")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.warning("Dati non disponibili per questo Ticker.")
+                except Exception as e:
+                    st.error("Errore di connessione API.")
+
+    st.divider()
+    st.header("3. AI Data Extraction (Bilanci PDF)")
+    api_key = st.text_input("OpenAI API Key (Opzionale)", type="password")
+    uploaded_pdf = st.file_uploader("Carica Bilancio CEE (PDF)", type="pdf")
+    if uploaded_pdf and st.button("Analizza con Intelligenza Artificiale"):
+        with st.spinner("Estrazione dati con AI in corso..."):
+            if not api_key:
+                time.sleep(2)
+                st.session_state.totale_attivo = 32_000_000
+                st.session_state.revenue = 65_000_000
+                st.session_state.dipendenti = 310
+                st.session_state.opex = 40_000_000
+                st.session_state.quotata = False
+                st.success("SIMULAZIONE AI COMPLETATA! Dati caricati.")
+                time.sleep(1)
+                st.rerun()
+            else:
+                try:
+                    pdf_reader = PyPDF2.PdfReader(uploaded_pdf)
+                    testo = "".join([page.extract_text() + "\n" for page in pdf_reader.pages[:15]])
+                    client = OpenAI(api_key=api_key)
+                    prompt = f"""Estrai come JSON: "attivo" (intero), "revenue" (intero), "dipendenti" (intero), "opex" (intero). Testo: {testo[:15000]}"""
+                    res = client.chat.completions.create(model="gpt-3.5-turbo-0125", messages=[{"role": "user", "content": prompt}], response_format={ "type": "json_object" })
+                    dati = json.loads(res.choices[0].message.content)
+                    st.session_state.totale_attivo = dati.get("attivo", 0)
+                    st.session_state.revenue = dati.get("revenue", 0)
+                    st.session_state.dipendenti = dati.get("dipendenti", 0)
+                    st.session_state.opex = dati.get("opex", 0)
+                    st.success("Dati estratti dal PDF!")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Errore AI: {e}")
 
 # --- CORPO PRINCIPALE E TABS ---
 st.title("🌍 CarbonRisk AI Enterprise")
 
-# Aggiunto il Tab della Doppia Materialità
-t_triage, t_dma, t_home, t_rischi, t_tax, t_cbam, t_down = st.tabs([
-    "🧭 Triage & Gap", "🎯 Doppia Materialità", "🏠 Dashboard", "📊 Analisi Rischi", "🇪🇺 Tassonomia UE", "🌍 CBAM (Dogana)", "📥 Report"
+# Rimossa la Dashboard, mantenuti i moduli operativi
+t_triage, t_rischi, t_tax, t_cbam, t_down = st.tabs([
+    "🧭 Triage, Gap & Materialità", "📊 Analisi Rischi", "🇪🇺 Tassonomia UE", "🌍 CBAM (Dogana Smart)", "📥 Report & Export"
 ])
 
 # =====================================================================
-# TAB 0: TRIAGE NORMATIVO E GAP ANALYSIS
+# TAB 0: TRIAGE NORMATIVO, GAP ANALYSIS E DOPPIA MATERIALITÀ
 # =====================================================================
 with t_triage:
     st.header("🧭 1. Test di Assoggettabilità (CSRD vs VSME)")
-    st.markdown("Verifica a quale standard normativo è sottoposta l'azienda in base alle soglie della Direttiva Europea. Compila i campi manualmente o usa l'AI.")
+    st.markdown("Il sistema valuta l'obbligo normativo basandosi sui dati inseriti nella Sidebar a sinistra (Attivo, Ricavi, Dipendenti, Quotazione).")
 
-    with st.expander("🤖 Estrazione Dati Bilancio con AI (Opzionale)", expanded=False):
-        api_key = st.text_input("OpenAI API Key", type="password")
-        uploaded_pdf = st.file_uploader("Carica Bilancio CEE (PDF)", type="pdf")
-        if st.button("Analizza Bilancio"):
-            with st.spinner("Estrazione parametri in corso..."):
-                time.sleep(1.5)
-                st.session_state.totale_attivo = 32_000_000
-                st.session_state.revenue = 65_000_000
-                st.session_state.dipendenti = 310
-                st.session_state.quotata = False
-                st.success("SIMULAZIONE COMPLETATA! Dati estratti e inseriti nei campi sottostanti.")
-                time.sleep(1)
-                st.rerun()
-
-    col_t1, col_t2 = st.columns(2)
-    with col_t1:
-        st.session_state.totale_attivo = st.number_input("Totale Attivo Stato Patrimoniale (€)", value=st.session_state.totale_attivo, step=1000000)
-        st.session_state.dipendenti = st.number_input("Numero Medio Dipendenti (FTE)", value=st.session_state.dipendenti, step=10)
-    with col_t2:
-        st.number_input("Ricavi Netti delle Vendite (€)", value=st.session_state.revenue, key="rev_triage_widget", step=1000000, on_change=sync_revenue_from_triage)
-        st.session_state.quotata = st.checkbox("Società quotata su mercato regolamentato europeo?", value=st.session_state.quotata)
-
+    # ALGORITMO DI TRIAGE
     soglia_attivo = st.session_state.totale_attivo > 25000000
     soglia_ricavi = st.session_state.revenue > 50000000
     soglia_dip = st.session_state.dipendenti > 250
     
     score_grandi = sum([soglia_attivo, soglia_ricavi, soglia_dip])
     
-    st.divider()
+    # Box Riepilogo Dati
+    st.info(f"**Dati Attuali:** Attivo: {st.session_state.totale_attivo/1e6:.1f}M € | Ricavi: {st.session_state.revenue/1e6:.1f}M € | Dipendenti: {st.session_state.dipendenti} | Quotata: {'Sì' if st.session_state.quotata else 'No'}")
+    
     if score_grandi >= 2:
         status_normativo = "CSRD_GRANDE"
         st.error("### 🏢 ESITO: OBBLIGO CSRD (Grande Impresa)")
-        st.markdown("L'azienda supera 2 dei 3 limiti dimensionali. Siete obbligati a redigere il report di sostenibilità secondo gli standard completi **ESRS**.")
+        st.markdown("L'azienda supera 2 dei 3 limiti dimensionali. È obbligatorio redigere il report di sostenibilità secondo gli standard completi **ESRS**.")
     elif st.session_state.quotata:
         status_normativo = "CSRD_PMI"
-        st.warning("### 📈 ESITO: OBBLIGO CSRD (PMI Quotata - LSME)")
-        st.markdown("In quanto PMI quotata, l'azienda è soggetta alla CSRD ma applicherà lo standard proporzionato **LSME**.")
+        st.warning("### 📈 ESITO: OBBLIGO CSRD (PMI Quotata)")
+        st.markdown("In quanto PMI quotata, l'azienda è soggetta alla CSRD (standard proporzionato **LSME**).")
     else:
         status_normativo = "VSME"
         st.success("### 🌱 ESITO: PERCORSO VOLONTARIO (PMI - EFRAG VSME)")
-        st.markdown("L'azienda **NON è obbligata** alla CSRD. Per rispondere alle richieste di banche e clienti, si utilizzerà il questionario semplificato **EFRAG VSME**.")
+        st.markdown("L'azienda **NON è obbligata** alla CSRD. Verrà utilizzato il framework semplificato **EFRAG VSME**.")
 
     st.divider()
     
+    # ---------------------------------------------------------
+    # 2. GAP ANALYSIS DINAMICA
+    # ---------------------------------------------------------
     st.header("🔍 2. Readiness & Gap Analysis")
-    st.markdown("Valuta lo stato attuale dei processi aziendali (As-Is). Rispondi alle domande selezionate dal framework EFRAG per la tua classe dimensionale.")
+    st.markdown("Rispondi alle domande per valutare lo stato dei processi aziendali rispetto allo standard individuato.")
 
     def render_gap_question(qid, text, pillar):
         ans = st.radio(f"**[{pillar}]** {text}", ["Sì (Documentato)", "In Corso (Informale)", "No"], horizontal=True, key=f"gap_{qid}")
@@ -293,174 +333,110 @@ with t_triage:
         with c_v1:
             render_gap_question("v_e1", "Tracciate accuratamente i consumi totali di energia (gas, luce, carburante)?", "E")
             render_gap_question("v_e2", "Calcolate le emissioni dirette (Scope 1) e indirette da energia (Scope 2)?", "E")
-            render_gap_question("v_e3", "Monitorate i volumi di rifiuti prodotti e la loro destinazione (riciclo/discarica)?", "E")
-            render_gap_question("v_e4", "Avete implementato misure per migliorare l'efficienza idrica o energetica?", "E")
+            render_gap_question("v_e3", "Monitorate i volumi di rifiuti prodotti e la loro destinazione?", "E")
         with c_v2:
-            render_gap_question("v_s1", "Tenete un registro formale degli infortuni sul lavoro e del tasso di frequenza?", "S")
-            render_gap_question("v_s2", "Erogate formazione obbligatoria e facoltativa tracciando le ore per dipendente?", "S")
-            render_gap_question("v_s3", "Applicate politiche per garantire parità di trattamento tra generi?", "S")
-            render_gap_question("v_s4", "Richiedete il rispetto di diritti umani base (no lavoro minorile) ai vostri fornitori?", "S")
+            render_gap_question("v_s1", "Tenete un registro formale degli infortuni sul lavoro?", "S")
+            render_gap_question("v_s2", "Applicate politiche per garantire parità di trattamento tra generi?", "S")
         with c_v3:
-            render_gap_question("v_g1", "Avete un Codice Etico o di Condotta formalizzato e comunicato ai dipendenti?", "G")
-            render_gap_question("v_g2", "Il management ha firmato una Politica di Sostenibilità aziendale?", "G")
-            render_gap_question("v_g3", "Avete procedure attive contro la corruzione e il riciclaggio?", "G")
-            render_gap_question("v_g4", "Avete stabilito target misurabili per il futuro (es. -10% CO2 entro 3 anni)?", "G")
+            render_gap_question("v_g1", "Avete un Codice Etico comunicato ai dipendenti?", "G")
+            render_gap_question("v_g2", "Avete stabilito target misurabili per il futuro (es. -10% CO2)?", "G")
             
-    else: 
-        c_e1, c_e2, c_e3 = st.tabs(["🌍 Ambiente (ESRS E1-E5)", "👥 Sociale (ESRS S1-S4)", "⚖️ Governance (ESRS G1 & 2)"])
+    else: # ESRS
+        c_e1, c_e2, c_e3 = st.tabs(["🌍 Ambiente (ESRS E)", "👥 Sociale (ESRS S)", "⚖️ Governance (ESRS G)"])
         with c_e1:
-            render_gap_question("e_e1", "Avete un Piano di Transizione Climatico allineato all'Accordo di Parigi (1.5°C)?", "E")
-            render_gap_question("e_e2", "Misurate le emissioni Scope 3 (catena di fornitura e uso dei prodotti)?", "E")
-            render_gap_question("e_e3", "Valutate l'impatto finanziario dei rischi climatici fisici e di transizione?", "E")
-            render_gap_question("e_e4", "Rendicontate l'allineamento dei vostri ricavi alla Tassonomia UE?", "E")
-            render_gap_question("e_e5", "Avete politiche specifiche sull'economia circolare e tutela della biodiversità?", "E")
+            render_gap_question("e_e1", "Avete un Piano di Transizione Climatico allineato a 1.5°C?", "E")
+            render_gap_question("e_e2", "Misurate le emissioni Scope 3 (catena di fornitura)?", "E")
+            render_gap_question("e_e3", "Rendicontate l'allineamento dei vostri ricavi alla Tassonomia UE?", "E")
         with c_e2:
-            render_gap_question("e_s1", "Pubblicate indicatori sulla diversità (es. Gender Pay Gap e donne in ruoli apicali)?", "S")
-            render_gap_question("e_s2", "Avete mappato i rischi sui diritti umani lungo tutta la catena del valore upstream/downstream?", "S")
-            render_gap_question("e_s3", "Esiste un sistema di dialogo formale con le comunità locali impattate dalle vostre fabbriche?", "S")
-            render_gap_question("e_s4", "Garantite e tracciate l'adeguato equilibrio vita-lavoro (work-life balance) dei dipendenti?", "S")
+            render_gap_question("e_s1", "Pubblicate il Gender Pay Gap?", "S")
+            render_gap_question("e_s2", "Avete mappato i rischi sui diritti umani lungo la catena del valore?", "S")
         with c_e3:
-            render_gap_question("e_g1", "È stata eseguita l'analisi di Doppia Materialità coinvolgendo gli stakeholder chiave?", "G")
-            render_gap_question("e_g2", "Il CdA ha competenze specifiche e supervisiona ufficialmente i temi ESG?", "G")
-            render_gap_question("e_g3", "La remunerazione dei dirigenti è legata al raggiungimento di target di sostenibilità?", "G")
-            render_gap_question("e_g4", "Esiste un sistema di Whistleblowing anonimo e sicuro per segnalare illeciti?", "G")
+            render_gap_question("e_g1", "Il CdA supervisiona ufficialmente i temi ESG?", "G")
+            render_gap_question("e_g2", "La remunerazione dei dirigenti è legata a target di sostenibilità?", "G")
 
     if st.button("Calcola Readiness % e Profilo di Rischio", use_container_width=True):
-        scores = {'E': 0, 'S': 0, 'G': 0}
-        max_scores = {'E': 0, 'S': 0, 'G': 0}
-        
+        scores = {'E': 0, 'S': 0, 'G': 0}; max_scores = {'E': 0, 'S': 0, 'G': 0}
         for q_id, data in st.session_state.gap_answers.items():
-            pillar = data["pillar"]
-            ans = data["ans"]
-            val = 1.0 if "Sì" in ans else (0.5 if "In Corso" in ans else 0.0)
-            scores[pillar] += val
-            max_scores[pillar] += 1
+            val = 1.0 if "Sì" in data["ans"] else (0.5 if "In Corso" in data["ans"] else 0.0)
+            scores[data["pillar"]] += val
+            max_scores[data["pillar"]] += 1
             
-        tot_score = sum(scores.values())
-        tot_max = sum(max_scores.values())
+        tot_score = sum(scores.values()); tot_max = sum(max_scores.values())
         readiness_pct = (tot_score / tot_max * 100) if tot_max > 0 else 0
         
         st.subheader("📊 Esito Audit Simulato")
         col_res1, col_res2 = st.columns([1, 2])
-        
         with col_res1:
             st.metric("Readiness Globale", f"{readiness_pct:.1f}%")
-            if readiness_pct < 40:
-                st.error("🔴 **Status: Laggard (Alto Rischio).** Gravi lacune normative. Necessario piano d'azione immediato.")
-            elif readiness_pct < 75:
-                st.warning("🟡 **Status: In Transizione (Rischio Moderato).** Esistono pratiche non formalizzate. Strutturare processi.")
-            else:
-                st.success("🟢 **Status: Leader (Pronto per Audit).** Alta conformità ai requisiti EFRAG.")
-                
-            st.markdown("#### Dettaglio Pilastri")
             for p, name in [('E', 'Ambiente'), ('S', 'Sociale'), ('G', 'Governance')]:
                 p_pct = (scores[p] / max_scores[p] * 100) if max_scores[p] > 0 else 0
                 st.progress(p_pct/100, text=f"{name}: {p_pct:.0f}%")
-
         with col_res2:
             df_radar = pd.DataFrame(dict(
-                r=[(scores['E']/max_scores['E'])*100 if max_scores['E']>0 else 0,
-                   (scores['S']/max_scores['S'])*100 if max_scores['S']>0 else 0,
-                   (scores['G']/max_scores['G'])*100 if max_scores['G']>0 else 0],
+                r=[(scores['E']/max_scores['E'])*100 if max_scores['E']>0 else 0, (scores['S']/max_scores['S'])*100 if max_scores['S']>0 else 0, (scores['G']/max_scores['G'])*100 if max_scores['G']>0 else 0],
                 theta=['Ambiente (E)', 'Sociale (S)', 'Governance (G)']
             ))
-            fig_radar = px.line_polar(df_radar, r='r', theta='theta', line_close=True, range_r=[0,100], 
-                                      title="Profilo di Maturità ESG", template="plotly_white")
+            fig_radar = px.line_polar(df_radar, r='r', theta='theta', line_close=True, range_r=[0,100], title="Profilo di Maturità ESG")
             fig_radar.update_traces(fill='toself', line_color='#00B050' if readiness_pct > 50 else '#EF553B')
             st.plotly_chart(fig_radar, use_container_width=True)
 
-# =====================================================================
-# TAB 0.5: DOPPIA MATERIALITÀ (NUOVO)
-# =====================================================================
-with t_dma:
-    st.header("🎯 Analisi di Doppia Materialità (DMA)")
-    st.markdown("Identifica i temi (Topic) ESRS rilevanti per la tua azienda. Secondo la CSRD, un tema è **Materiale** se supera la soglia di rilevanza in almeno una delle due dimensioni (Impatto o Finanziaria).")
+    # ---------------------------------------------------------
+    # 3. DOPPIA MATERIALITÀ (SOLO SE CSRD)
+    # ---------------------------------------------------------
+    if status_normativo in ["CSRD_GRANDE", "CSRD_PMI"]:
+        st.divider()
+        st.header("🎯 3. Analisi di Doppia Materialità (DMA)")
+        st.markdown("Essendo soggetta alla CSRD, l'azienda deve identificare quali temi rendicontare. Rispondi alle domande per determinare la materialità.")
 
-    col_dma1, col_dma2 = st.columns([1, 1.5])
+        col_dma1, col_dma2 = st.columns([1.2, 1])
 
-    with col_dma1:
-        st.subheader("1. Valutazione (Scoring)")
-        st.markdown("Assegna un punteggio da 1 (Nullo) a 5 (Critico) per ogni tema.")
-        
-        pilastro_filtro = st.radio("Filtra Pilastro:", ["Tutti", "E (Ambiente)", "S (Sociale)", "G (Governance)"], horizontal=True)
-        
-        with st.container(height=500):
-            for topic, scores in st.session_state.materiality_scores.items():
-                if pilastro_filtro != "Tutti" and scores["pilastro"] not in pilastro_filtro:
-                    continue
-                
-                with st.expander(topic):
-                    st.session_state.materiality_scores[topic]["impatto"] = st.slider(
-                        f"Impatto Ambientale/Sociale (Inside-Out)", 
-                        1, 5, scores["impatto"], key=f"imp_{topic}"
-                    )
-                    st.session_state.materiality_scores[topic]["finanza"] = st.slider(
-                        f"Impatto Finanziario (Outside-In)", 
-                        1, 5, scores["finanza"], key=f"fin_{topic}"
-                    )
-
-    with col_dma2:
-        st.subheader("2. Matrice di Materialità")
-        
-        dma_data = []
-        for topic, scores in st.session_state.materiality_scores.items():
-            is_material = scores["impatto"] >= 3 or scores["finanza"] >= 3
-            dma_data.append({
-                "Tema": topic,
-                "Pilastro": scores["pilastro"],
-                "Materialità d'Impatto": scores["impatto"],
-                "Materialità Finanziaria": scores["finanza"],
-                "Status": "Materiale" if is_material else "Non Materiale",
-                "Dimensione": 30 if is_material else 10
-            })
+        with col_dma1:
+            st.subheader("Valutazione dei Temi (Topic)")
+            options_dict = {"1 - Nullo": 1, "2 - Basso": 2, "3 - Medio": 3, "4 - Alto": 4, "5 - Critico": 5}
             
-        df_dma = pd.DataFrame(dma_data)
-        
-        color_map_dma = {'E': '#00B050', 'S': '#00B0F0', 'G': '#0070C0'}
-        
-        fig_dma = px.scatter(
-            df_dma, 
-            x="Materialità Finanziaria", 
-            y="Materialità d'Impatto", 
-            color="Pilastro",
-            color_discrete_map=color_map_dma,
-            size="Dimensione",
-            hover_name="Tema",
-            text="Tema",
-            range_x=[0.5, 5.5],
-            range_y=[0.5, 5.5],
-            title="Matrice di Doppia Materialità ESRS"
-        )
-        
-        fig_dma.add_hline(y=2.95, line_dash="dash", line_color="red", annotation_text="Soglia Impatto")
-        fig_dma.add_vline(x=2.95, line_dash="dash", line_color="red", annotation_text="Soglia Finanziaria")
-        
-        fig_dma.update_traces(textposition='top center', textfont_size=10)
-        fig_dma.update_layout(
-            height=450,
-            xaxis_title="Materialità Finanziaria (Rischio/Opportunità)",
-            yaxis_title="Materialità d'Impatto (Persone/Ambiente)",
-            plot_bgcolor='rgba(240, 240, 240, 0.5)'
-        )
-        fig_dma.add_shape(type="rect", x0=2.95, y0=2.95, x1=5.5, y1=5.5, fillcolor="rgba(255, 0, 0, 0.1)", line_width=0, layer="below")
-        
-        st.plotly_chart(fig_dma, use_container_width=True)
-        
-        temi_materiali = df_dma[df_dma["Status"] == "Materiale"]["Tema"].tolist()
-        if temi_materiali:
-            st.success(f"📌 **Temi da Rendicontare ({len(temi_materiali)}/10):** " + ", ".join(temi_materiali))
-        else:
-            st.info("Sposta gli slider per valutare quali temi superano la soglia di materialità (Valore ≥ 3).")
+            with st.container(height=600):
+                for topic, scores in st.session_state.materiality_scores.items():
+                    with st.expander(f"**[{scores['pilastro']}]** {topic}"):
+                        st.markdown("**Impatto Ambientale/Sociale (Inside-Out)**")
+                        q_imp = st.selectbox(f"Qual è la scala e la gravità degli impatti dell'azienda su {topic}?", 
+                                             list(options_dict.keys()), index=scores["impatto"]-1, key=f"q_imp_{topic}")
+                        
+                        st.markdown("**Impatto Finanziario (Outside-In)**")
+                        q_fin = st.selectbox(f"Qual è l'entità dei rischi o opportunità finanziarie derivanti da {topic}?", 
+                                             list(options_dict.keys()), index=scores["finanza"]-1, key=f"q_fin_{topic}")
+                        
+                        st.session_state.materiality_scores[topic]["impatto"] = options_dict[q_imp]
+                        st.session_state.materiality_scores[topic]["finanza"] = options_dict[q_fin]
 
-# =====================================================================
-# TAB 1: DASHBOARD
-# =====================================================================
-with t_home:
-    st.header("Financial & Climate Overview")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Turnover Totale", f"€ {st.session_state.revenue:,.0f}")
-    c2.metric("OpEx Totali", f"€ {st.session_state.opex:,.0f}")
-    c3.metric("Emissioni Totali", f"{get_tot_emissions():,.0f} tCO2")
+        with col_dma2:
+            st.subheader("Matrice Risultante")
+            dma_data = []
+            for topic, scores in st.session_state.materiality_scores.items():
+                is_material = scores["impatto"] >= 3 or scores["finanza"] >= 3
+                dma_data.append({
+                    "Tema": topic, "Pilastro": scores["pilastro"],
+                    "Impatto": scores["impatto"], "Finanza": scores["finanza"],
+                    "Status": "Materiale" if is_material else "Non Materiale",
+                    "Dim": 20 if is_material else 10
+                })
+                
+            df_dma = pd.DataFrame(dma_data)
+            fig_dma = px.scatter(
+                df_dma, x="Finanza", y="Impatto", color="Pilastro",
+                color_discrete_map={'E': '#00B050', 'S': '#00B0F0', 'G': '#0070C0'},
+                size="Dim", hover_name="Tema", text="Tema",
+                range_x=[0.5, 5.5], range_y=[0.5, 5.5]
+            )
+            fig_dma.add_hline(y=2.95, line_dash="dash", line_color="red")
+            fig_dma.add_vline(x=2.95, line_dash="dash", line_color="red")
+            fig_dma.update_traces(textposition='top center', textfont_size=10)
+            fig_dma.update_layout(height=500, xaxis_title="Rilevanza Finanziaria", yaxis_title="Rilevanza d'Impatto")
+            fig_dma.add_shape(type="rect", x0=2.95, y0=2.95, x1=5.5, y1=5.5, fillcolor="rgba(255,0,0,0.1)", line_width=0, layer="below")
+            st.plotly_chart(fig_dma, use_container_width=True)
+            
+            temi_mat = df_dma[df_dma["Status"] == "Materiale"]["Tema"].tolist()
+            if temi_mat:
+                st.success(f"📌 **Temi Obbligatori ({len(temi_mat)}/10):** " + ", ".join(temi_mat))
 
 # =====================================================================
 # TAB 2: ANALISI RISCHI (IPCC, NGFS, FATTORI DI EMISSIONE)
@@ -585,7 +561,7 @@ with t_rischi:
 # TAB 3: TASSONOMIA UE
 # =====================================================================
 with t_tax:
-    st.header("🇪🇺 Reporting Tassonomia UE (Modello Completo)")
+    st.header("🇪🇺 Reporting Tassonomia UE")
     nace_db = load_nace_hierarchy("NACE_Rev.2.1.rdf")
     tax_pref = load_taxonomy_json("taxonomy.json")
 
@@ -691,10 +667,44 @@ with t_cbam:
             c3.metric("Costo CBAM", f"€ {costo:.2f}", delta="Impatto OpEx", delta_color="inverse")
 
 # =====================================================================
-# TAB 5: DOWNLOAD
+# TAB 5: DOWNLOAD E REPORTISTICA (INCLUDE TUTTO)
 # =====================================================================
 with t_down:
-    st.header("📥 Esportazione Dati")
-    if st.button("🪄 Genera PDF"):
-        pdf = FPDF(); pdf.add_page(); pdf.set_font("Arial", 'B', 18); pdf.cell(200, 15, txt="ESG Report", ln=True, align='C')
-        st.download_button("Scarica PDF", pdf.output(dest='S').encode('latin-1'), "ESG_Report.pdf")
+    st.header("📥 Reportistica Integrata ed Export")
+    st.markdown("Genera documenti pronti per il management o esporta i file CSV grezzi per l'integrazione con i sistemi ERP aziendali.")
+    
+    col_d1, col_d2, col_d3 = st.columns(3)
+    
+    with col_d1:
+        st.subheader("1. Report Direzionale")
+        if st.button("🪄 Genera PDF Riepilogativo"):
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font("Arial", 'B', 18)
+            pdf.cell(200, 15, txt="ESG & Climate Risk Report", ln=True, align='C')
+            
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(200, 10, txt=f"Status Normativo: {status_normativo}", ln=True)
+            pdf.cell(200, 10, txt=f"Ricavi: {st.session_state.revenue} EUR", ln=True)
+            pdf.cell(200, 10, txt=f"Totale Emissioni: {get_tot_emissions()} tCO2", ln=True)
+            
+            pdf_bytes = pdf.output(dest='S').encode('latin-1')
+            st.download_button("📥 Scarica (.PDF)", data=pdf_bytes, file_name="ESG_Report.pdf", mime="application/pdf")
+
+    with col_d2:
+        st.subheader("2. Tassonomia UE (Annex II)")
+        if st.session_state.tax_portfolio:
+            df_tax_export = pd.DataFrame(st.session_state.tax_portfolio)
+            csv_tax = df_tax_export.to_csv(index=False, sep=";")
+            st.download_button(label="📥 Scarica Annex II (.CSV)", data=csv_tax, file_name="EU_Taxonomy.csv", mime="text/csv")
+        else:
+            st.info("Compila la Tassonomia per esportare il file.")
+
+    with col_d3:
+        st.subheader("3. Registro CBAM")
+        if st.session_state.cbam_portfolio:
+            df_cbam_export = pd.DataFrame(st.session_state.cbam_portfolio)
+            csv_cbam_data = df_cbam_export.to_csv(index=False, sep=",") 
+            st.download_button(label="📥 Scarica Dichiarazione (.CSV)", data=csv_cbam_data, file_name="CBAM_Registry.csv", mime="text/csv")
+        else:
+            st.info("Compila le spedizioni CBAM per esportare.")
