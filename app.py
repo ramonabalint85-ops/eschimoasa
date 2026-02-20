@@ -18,27 +18,42 @@ import requests
 st.set_page_config(page_title="CarbonRisk AI Enterprise", layout="wide")
 
 # --- SINCRONIZZAZIONE (Session State) ---
-if 'revenue' not in st.session_state: st.session_state.revenue = 0
-if 'opex' not in st.session_state: st.session_state.opex = 0
-if 'totale_attivo' not in st.session_state: st.session_state.totale_attivo = 0
-if 'dipendenti' not in st.session_state: st.session_state.dipendenti = 0
-if 'quotata' not in st.session_state: st.session_state.quotata = False
-if 'scope1' not in st.session_state: st.session_state.scope1 = 0
-if 'scope2' not in st.session_state: st.session_state.scope2 = 0
-if 'scope3' not in st.session_state: st.session_state.scope3 = 0
-if 'perc_red' not in st.session_state: st.session_state.perc_red = 0
-if 'em_final' not in st.session_state: st.session_state.em_final = 0
-if 'rata_prestito' not in st.session_state: st.session_state.rata_prestito = 0
-if 'policy_multiplier' not in st.session_state: st.session_state.policy_multiplier = 1.0
-if 'capex_totale' not in st.session_state: st.session_state.capex_totale = 0
-if 'tax_portfolio' not in st.session_state: st.session_state.tax_portfolio = []
-if 'cbam_portfolio' not in st.session_state: st.session_state.cbam_portfolio = [] 
+# Usa setdefault per evitare che Streamlit "dimentichi" le variabili
+st.session_state.setdefault('revenue', 0)
+st.session_state.setdefault('opex', 0)
+st.session_state.setdefault('totale_attivo', 0)
+st.session_state.setdefault('dipendenti', 0)
+st.session_state.setdefault('quotata', False)
+st.session_state.setdefault('scope1', 0)
+st.session_state.setdefault('scope2', 0)
+st.session_state.setdefault('scope3', 0)
+st.session_state.setdefault('perc_red', 0)
+st.session_state.setdefault('em_final', 0)
+st.session_state.setdefault('rata_prestito', 0)
+st.session_state.setdefault('policy_multiplier', 1.0)
+st.session_state.setdefault('capex_totale', 0)
+st.session_state.setdefault('tax_portfolio', [])
+st.session_state.setdefault('cbam_portfolio', [])
+st.session_state.setdefault('gap_answers', {})
+st.session_state.setdefault('materiality_scores', {
+    "E1 - Cambiamento Climatico": {"pilastro": "E", "impatto": 1, "finanza": 1},
+    "E2 - Inquinamento": {"pilastro": "E", "impatto": 1, "finanza": 1},
+    "E3 - Risorse Idriche e Marine": {"pilastro": "E", "impatto": 1, "finanza": 1},
+    "E4 - Biodiversità ed Ecosistemi": {"pilastro": "E", "impatto": 1, "finanza": 1},
+    "E5 - Uso Risorse ed Economia Circolare": {"pilastro": "E", "impatto": 1, "finanza": 1},
+    "S1 - Forza Lavoro Propria": {"pilastro": "S", "impatto": 1, "finanza": 1},
+    "S2 - Lavoratori nella Catena del Valore": {"pilastro": "S", "impatto": 1, "finanza": 1},
+    "S3 - Comunità Interessate": {"pilastro": "S", "impatto": 1, "finanza": 1},
+    "S4 - Consumatori ed Utenti Finali": {"pilastro": "S", "impatto": 1, "finanza": 1},
+    "G1 - Condotta Aziendale": {"pilastro": "G", "impatto": 1, "finanza": 1},
+})
 
 def get_tot_emissions(): return st.session_state.scope1 + st.session_state.scope2 + st.session_state.scope3
 def sync_from_perc(): st.session_state.em_final = int(get_tot_emissions() * (1 - st.session_state.perc_red / 100.0))
 def sync_from_scopes(): sync_from_perc()
+def sync_revenue_from_triage(): st.session_state.revenue = st.session_state.rev_triage_widget
 
-# --- SCALE DI VALUTAZIONE (READINESS E MATERIALITÀ) ---
+# --- SCALE DI VALUTAZIONE ---
 SCALE_OPTIONS = [
     "Per niente (0% - Nessuna azione intrapresa)",
     "In fase iniziale (Attività pianificata o discussa)",
@@ -210,7 +225,7 @@ def check_cbam_category(cn_code):
 
 # --- SIDEBAR GLOBALE (ACQUISIZIONE DATI) ---
 with st.sidebar:
-    st.title("⚙️ Acquisizione Dati Base")
+    st.title("⚙️ Acquisizione Dati")
     
     st.header("1. Inserimento Manuale")
     st.selectbox("Paese Sede Legale", df_base['Paese'].unique(), index=3, key='selected_country') 
@@ -224,39 +239,69 @@ with st.sidebar:
     st.divider()
     st.header("2. Sincronizzazione API (YFinance)")
     ticker = st.text_input("Ticker Aziendale (es. ENEL.MI)")
+    
     if st.button("Sincronizza da Yahoo Finance"):
-        with st.spinner("Scansione bilanci in corso..."):
+        with st.spinner("Ricerca dei dati nei server finanziari..."):
             if not ticker: 
                 st.warning("⚠️ Inserisci un Ticker valido.")
             else:
                 try:
                     stock = yf.Ticker(ticker)
-                    new_rev, new_assets, new_emps = None, None, None
-                    try:
-                        info = stock.info
-                        if info:
-                            new_rev = info.get('totalRevenue')
-                            new_assets = info.get('totalAssets')
-                            new_emps = info.get('fullTimeEmployees')
-                    except: pass
-                        
-                    if not new_rev:
-                        fins = stock.financials
-                        if not fins.empty and 'Total Revenue' in fins.index:
-                            new_rev = fins.loc['Total Revenue'].dropna().iloc[0]
+                    info = stock.info
+                    fins = stock.financials
+                    cf = stock.cash_flow
                     
+                    new_rev, new_assets, new_emps = None, None, None
+                    new_opex, new_capex = None, None
+                    
+                    # 1. Recupero Info Base
+                    if info:
+                        new_rev = info.get('totalRevenue')
+                        new_assets = info.get('totalAssets')
+                        new_emps = info.get('fullTimeEmployees')
+
+                    # 2. Ricerca Fuzzy per Ricavi e OpEx
+                    if not fins.empty:
+                        # Se mancano ricavi
+                        if not new_rev:
+                            rev_keys = [k for k in fins.index if 'revenue' in str(k).lower()]
+                            if rev_keys: new_rev = fins.loc[rev_keys[0]].dropna().iloc[0]
+                        
+                        # OpEx (Cerca "operating expense")
+                        opex_keys = [k for k in fins.index if 'operating' in str(k).lower() and 'expense' in str(k).lower()]
+                        if opex_keys:
+                            new_opex = fins.loc[opex_keys[0]].dropna().iloc[0]
+                        else:
+                            # Calcolo derivato: Revenue - Operating Income
+                            op_inc_keys = [k for k in fins.index if 'operating income' in str(k).lower()]
+                            if new_rev and op_inc_keys:
+                                new_opex = new_rev - fins.loc[op_inc_keys[0]].dropna().iloc[0]
+
+                    # 3. Ricerca Fuzzy per CapEx (Cash Flow)
+                    if not cf.empty:
+                        capex_keys = [k for k in cf.index if 'capital' in str(k).lower() and 'expenditure' in str(k).lower()]
+                        if not capex_keys: # Alternativa: Property Plant and Equipment
+                            capex_keys = [k for k in cf.index if 'property' in str(k).lower() and 'plant' in str(k).lower()]
+                        
+                        if capex_keys:
+                            new_capex = abs(cf.loc[capex_keys[0]].dropna().iloc[0]) # Assoluto perchè è negativo
+                    
+                    # 4. Aggiornamento Session State
                     if new_rev:
                         st.session_state.revenue = int(new_rev)
                         st.session_state.totale_attivo = int(new_assets) if new_assets else int(new_rev * 1.5)
                         st.session_state.dipendenti = int(new_emps) if new_emps else max(50, int(new_rev / 500000))
+                        if new_opex and not pd.isna(new_opex): st.session_state.opex = int(new_opex)
+                        if new_capex and not pd.isna(new_capex): st.session_state.capex_totale = int(new_capex)
                         st.session_state.quotata = True
-                        st.success(f"✅ Dati estratti per {ticker.upper()}!")
+                        
+                        st.success(f"✅ Dati finanziari completi estratti per {ticker.upper()}!")
                         time.sleep(1.5)
                         st.rerun()
                     else:
-                        st.warning("⚠️ Nessun dato finanziario trovato.")
+                        st.warning("⚠️ Yahoo Finance non ha restituito dati utili. I nomi dei campi potrebbero essere stati modificati.")
                 except Exception as e:
-                    st.error("❌ Connessione rifiutata da Yahoo (Rate Limit).")
+                    st.error("❌ Connessione bloccata da Yahoo (Rate Limit). Riprova tra poco o inserisci a mano.")
 
     st.divider()
     st.header("3. AI Data Extraction (PDF)")
@@ -302,7 +347,7 @@ t_triage, t_rischi, t_tax, t_cbam, t_down = st.tabs([
 ])
 
 # =====================================================================
-# TAB 0: TRIAGE NORMATIVO E GAP ANALYSIS
+# TAB 0: TRIAGE NORMATIVO, GAP ANALYSIS E DOPPIA MATERIALITÀ
 # =====================================================================
 with t_triage:
     st.header("🧭 1. Test di Assoggettabilità")
@@ -377,6 +422,8 @@ with t_triage:
         with tab_context:
             for i, q in enumerate(questions):
                 val = st.selectbox(f"{i+1}. {q}", SCALE_OPTIONS, key=f"gap_{pillar_code}_{i}")
+                if 'gap_answers' not in st.session_state:
+                    st.session_state.gap_answers = {}
                 st.session_state.gap_answers[f"{pillar_code}_{i}"] = {"ans": val, "pillar": pillar_code}
 
     render_gap_list(gap_qs_E, "E", c_g_E)
@@ -390,7 +437,7 @@ with t_triage:
         for q_id, data in st.session_state.gap_answers.items():
             val_num = SCALE_VALUES[data["ans"]]
             scores[data["pillar"]] += val_num
-            max_scores[data["pillar"]] += 5 # 5 è il punteggio massimo (Completamente)
+            max_scores[data["pillar"]] += 5 
             
         tot_score = sum(scores.values())
         tot_max = sum(max_scores.values())
@@ -484,10 +531,8 @@ with t_triage:
             }
         }
 
-        # Tabs per categorizzare le valutazioni
         t_dma_e, t_dma_s, t_dma_g, t_dma_all = st.tabs(["🌍 Ambiente (E)", "👥 Sociale (S)", "⚖️ Governance (G)", "📈 Risultato Matrice Totale"])
         
-        # Dizionario per salvare i punteggi calcolati per il grafico
         calculated_dma_scores = {}
 
         def render_dma_questions_for_pillar(pillar_dict, pillar_code, tab_context):
@@ -510,8 +555,7 @@ with t_triage:
                             if q_type == 'I': topic_imp_scores.append(val_num)
                             else: topic_fin_scores.append(val_num)
                         
-                        # Calcolo medie (se una dimensione non ha domande, prende il valore dell'altra per pareggio logico)
-                        avg_imp = sum(topic_imp_scores)/len(topic_imp_scores) if topic_imp_scores else sum(topic_fin_scores)/len(topic_fin_scores)
+                        avg_imp = sum(topic_imp_scores)/len(topic_imp_scores) if topic_imp_scores else (sum(topic_fin_scores)/len(topic_fin_scores) if topic_fin_scores else 0)
                         avg_fin = sum(topic_fin_scores)/len(topic_fin_scores) if topic_fin_scores else avg_imp
                         
                         calculated_dma_scores[topic] = {
@@ -526,13 +570,11 @@ with t_triage:
         render_dma_questions_for_pillar(dma_questions_dict["S"], "S", t_dma_s)
         render_dma_questions_for_pillar(dma_questions_dict["G"], "G", t_dma_g)
 
-        # Tab Finale: Disegno della Matrice
         with t_dma_all:
             st.subheader("Matrice di Doppia Materialità Risultante")
             
             dma_data = []
             for topic, scores in calculated_dma_scores.items():
-                # Soglia di materialità impostata a >= 2.5 (Tra Parzialmente e In gran parte)
                 is_material = scores["impatto"] >= 2.5 or scores["finanza"] >= 2.5
                 dma_data.append({
                     "Tema": topic, "Pilastro": scores["pilastro"],
@@ -555,7 +597,6 @@ with t_triage:
                 fig_dma.update_traces(textposition='top center', textfont_size=10)
                 fig_dma.update_layout(height=600, xaxis_title="Materialità Finanziaria (0-5)", yaxis_title="Materialità d'Impatto (0-5)")
                 
-                # Area di Materialità (Due rettangoli che formano una L inversa per coprire tutto ciò che è > 2.45)
                 fig_dma.add_shape(type="rect", x0=2.45, y0=-0.5, x1=5.5, y1=5.5, fillcolor="rgba(255,0,0,0.05)", line_width=0, layer="below")
                 fig_dma.add_shape(type="rect", x0=-0.5, y0=2.45, x1=5.5, y1=5.5, fillcolor="rgba(255,0,0,0.05)", line_width=0, layer="below")
                 
@@ -796,7 +837,7 @@ with t_cbam:
             c3.metric("Costo CBAM", f"€ {costo:.2f}", delta="Impatto OpEx", delta_color="inverse")
 
 # =====================================================================
-# TAB 5: DOWNLOAD
+# TAB 5: DOWNLOAD E EXPORT
 # =====================================================================
 with t_down:
     st.header("📥 Esportazione Dati")
