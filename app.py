@@ -18,7 +18,6 @@ import requests
 st.set_page_config(page_title="CarbonRisk AI Enterprise", layout="wide")
 
 # --- SINCRONIZZAZIONE (Session State) ---
-# Usa setdefault per evitare che Streamlit "dimentichi" le variabili
 st.session_state.setdefault('revenue', 0)
 st.session_state.setdefault('opex', 0)
 st.session_state.setdefault('totale_attivo', 0)
@@ -53,7 +52,7 @@ def sync_from_perc(): st.session_state.em_final = int(get_tot_emissions() * (1 -
 def sync_from_scopes(): sync_from_perc()
 def sync_revenue_from_triage(): st.session_state.revenue = st.session_state.rev_triage_widget
 
-# --- SCALE DI VALUTAZIONE ---
+# --- SCALE DI VALUTAZIONE (READINESS E MATERIALITÀ) ---
 SCALE_OPTIONS = [
     "Per niente (0% - Nessuna azione intrapresa)",
     "In fase iniziale (Attività pianificata o discussa)",
@@ -225,7 +224,7 @@ def check_cbam_category(cn_code):
 
 # --- SIDEBAR GLOBALE (ACQUISIZIONE DATI) ---
 with st.sidebar:
-    st.title("⚙️ Acquisizione Dati")
+    st.title("⚙️ Acquisizione Dati Base")
     
     st.header("1. Inserimento Manuale")
     st.selectbox("Paese Sede Legale", df_base['Paese'].unique(), index=3, key='selected_country') 
@@ -254,39 +253,31 @@ with st.sidebar:
                     new_rev, new_assets, new_emps = None, None, None
                     new_opex, new_capex = None, None
                     
-                    # 1. Recupero Info Base
                     if info:
                         new_rev = info.get('totalRevenue')
                         new_assets = info.get('totalAssets')
                         new_emps = info.get('fullTimeEmployees')
 
-                    # 2. Ricerca Fuzzy per Ricavi e OpEx
                     if not fins.empty:
-                        # Se mancano ricavi
                         if not new_rev:
                             rev_keys = [k for k in fins.index if 'revenue' in str(k).lower()]
                             if rev_keys: new_rev = fins.loc[rev_keys[0]].dropna().iloc[0]
                         
-                        # OpEx (Cerca "operating expense")
                         opex_keys = [k for k in fins.index if 'operating' in str(k).lower() and 'expense' in str(k).lower()]
                         if opex_keys:
                             new_opex = fins.loc[opex_keys[0]].dropna().iloc[0]
                         else:
-                            # Calcolo derivato: Revenue - Operating Income
                             op_inc_keys = [k for k in fins.index if 'operating income' in str(k).lower()]
                             if new_rev and op_inc_keys:
                                 new_opex = new_rev - fins.loc[op_inc_keys[0]].dropna().iloc[0]
 
-                    # 3. Ricerca Fuzzy per CapEx (Cash Flow)
                     if not cf.empty:
                         capex_keys = [k for k in cf.index if 'capital' in str(k).lower() and 'expenditure' in str(k).lower()]
-                        if not capex_keys: # Alternativa: Property Plant and Equipment
+                        if not capex_keys: 
                             capex_keys = [k for k in cf.index if 'property' in str(k).lower() and 'plant' in str(k).lower()]
-                        
                         if capex_keys:
-                            new_capex = abs(cf.loc[capex_keys[0]].dropna().iloc[0]) # Assoluto perchè è negativo
+                            new_capex = abs(cf.loc[capex_keys[0]].dropna().iloc[0])
                     
-                    # 4. Aggiornamento Session State
                     if new_rev:
                         st.session_state.revenue = int(new_rev)
                         st.session_state.totale_attivo = int(new_assets) if new_assets else int(new_rev * 1.5)
@@ -299,9 +290,9 @@ with st.sidebar:
                         time.sleep(1.5)
                         st.rerun()
                     else:
-                        st.warning("⚠️ Yahoo Finance non ha restituito dati utili. I nomi dei campi potrebbero essere stati modificati.")
+                        st.warning("⚠️ Yahoo Finance non ha restituito dati utili.")
                 except Exception as e:
-                    st.error("❌ Connessione bloccata da Yahoo (Rate Limit). Riprova tra poco o inserisci a mano.")
+                    st.error("❌ Connessione bloccata da Yahoo (Rate Limit).")
 
     st.divider()
     st.header("3. AI Data Extraction (PDF)")
@@ -374,100 +365,150 @@ with t_triage:
     st.divider()
     
     # ---------------------------------------------------------
-    # 2. GAP ANALYSIS (30 DOMANDE DETTAGLIATE)
+    # 2. GAP ANALYSIS E READINESS (SEPARATA PER VSME O CSRD)
     # ---------------------------------------------------------
-    st.header("🔍 2. Readiness & Gap Analysis")
-    st.markdown("Valuta lo stato attuale dei processi aziendali. Seleziona il livello di maturità per ogni processo.")
-
-    gap_qs_E = [
-        "L'azienda ha definito un piano di transizione climatica allineato al target di 1.5°C?",
-        "Il calcolo delle emissioni Scope 1 e 2 è completo e basato su dati primari?",
-        "È stata effettuata una mappatura completa delle emissioni Scope 3 lungo la catena del valore?",
-        "I rischi fisici e di transizione legati al clima sono integrati nel sistema di gestione rischi (ERM)?",
-        "Esistono target ambientali misurabili, approvati dalla direzione e con scadenze definite?",
-        "I processi aziendali integrano principi di economia circolare e gestione dei rifiuti?",
-        "È stata eseguita una valutazione degli impatti sulla biodiversità e sugli ecosistemi nelle aree operative?",
-        "Il monitoraggio del consumo idrico e degli scarichi è attivo e documentato?",
-        "Il budget degli investimenti (CapEx) è stanziato per obiettivi di sostenibilità ambientale?",
-        "Esistono controlli rigorosi per eliminare o ridurre l'emissione di sostanze inquinanti?"
-    ]
-    gap_qs_S = [
-        "Esiste una procedura di 'due diligence' attiva per i diritti umani in tutta la catena di fornitura?",
-        "L'azienda monitora e pubblica il divario retributivo di genere (pay gap) con piani di azione correttivi?",
-        "Il sistema di gestione della salute e sicurezza copre tutti i lavoratori, inclusi i somministrati?",
-        "Viene garantito un piano di formazione continua su competenze chiave per ogni dipendente?",
-        "Esistono meccanismi formali di dialogo e consultazione con le rappresentanze dei lavoratori?",
-        "Il rispetto del salario dignitoso (living wage) è verificato per tutti i dipendenti e fornitori critici?",
-        "Sono attive politiche di inclusione che garantiscono pari opportunità per minoranze e categorie protette?",
-        "L'azienda valuta regolarmente l'impatto sociale delle sue attività sulle comunità locali?",
-        "Esistono protocolli per garantire la massima protezione dei dati e della privacy dei consumatori?",
-        "Il sistema di welfare aziendale risponde ai bisogni reali di equilibrio vita-lavoro (work-life balance)?"
-    ]
-    gap_qs_G = [
-        "Il Codice Etico e le politiche anti-corruzione sono stati comunicati e formati a tutti i livelli?",
-        "Gli incentivi economici dei dirigenti sono legati al raggiungimento di obiettivi ESG specifici?",
-        "Il canale di whistleblowing è esterno, anonimo e accessibile a tutti gli stakeholder?",
-        "I criteri di sostenibilità sono vincolanti per la selezione e la qualifica dei fornitori?",
-        "Esiste una politica trasparente riguardante le attività di lobbying e l'impegno politico?",
-        "L'azienda pubblica la rendicontazione fiscale dettagliata per ogni paese in cui opera?",
-        "I dati di sostenibilità sono sottoposti agli stessi controlli interni dei dati finanziari?",
-        "Esiste una procedura strutturata per la gestione e comunicazione di incidenti o crisi reputazionali?",
-        "La composizione del Consiglio di Amministrazione garantisce competenze ESG adeguate e diversità?",
-        "La strategia di sostenibilità è approvata e revisionata annualmente dall'organo di governo?"
-    ]
-
-    c_g_E, c_g_S, c_g_G = st.tabs(["🌍 Ambiente (E)", "👥 Sociale (S)", "⚖️ Governance (G)"])
-    
-    def render_gap_list(questions, pillar_code, tab_context):
+    def render_gap_list(questions, pillar_code, tab_context, prefix="gap"):
         with tab_context:
             for i, q in enumerate(questions):
-                val = st.selectbox(f"{i+1}. {q}", SCALE_OPTIONS, key=f"gap_{pillar_code}_{i}")
-                if 'gap_answers' not in st.session_state:
-                    st.session_state.gap_answers = {}
-                st.session_state.gap_answers[f"{pillar_code}_{i}"] = {"ans": val, "pillar": pillar_code}
+                val = st.selectbox(f"{i+1}. {q}", SCALE_OPTIONS, key=f"{prefix}_{pillar_code}_{i}")
+                st.session_state.gap_answers[f"{prefix}_{pillar_code}_{i}"] = {"ans": val, "pillar": pillar_code}
 
-    render_gap_list(gap_qs_E, "E", c_g_E)
-    render_gap_list(gap_qs_S, "S", c_g_S)
-    render_gap_list(gap_qs_G, "G", c_g_G)
-
-    if st.button("Calcola Livello di Readiness", use_container_width=True):
-        scores = {'E': 0, 'S': 0, 'G': 0}
-        max_scores = {'E': 0, 'S': 0, 'G': 0}
+    if status_normativo == "VSME":
+        st.header("🔍 2. Readiness Data Availability (VSME)")
+        st.markdown("Per le PMI, lo standard VSME non richiede la Doppia Materialità ma la rendicontazione di dati base in 3 moduli. Valuta la disponibilità del dato nella tua azienda.")
         
-        for q_id, data in st.session_state.gap_answers.items():
-            val_num = SCALE_VALUES[data["ans"]]
-            scores[data["pillar"]] += val_num
-            max_scores[data["pillar"]] += 5 
+        modulo_scelto = st.radio("Quale Modulo VSME intendi rendicontare?", 
+                                 ["Modulo Base (Solo indicatori KPI quantitativi)", 
+                                  "Modulo Narrativo - PAT (Politiche, Azioni e Target)", 
+                                  "Modulo Business Partner (Richiesto da Banche o Capofila)"], horizontal=True)
+        
+        vsme_qs_E = [
+            "Consumi Energetici: Siete in grado di rendicontare il consumo totale di energia suddiviso per fonti (rinnovabili vs fossili)?",
+            "Emissioni GHG: Avete calcolato le emissioni Scope 1 e Scope 2 (usando le bollette energetiche)?",
+            "Rifiuti: Esiste un registro dei rifiuti che distingue tra pericolosi, non pericolosi e destinati al riciclo?"
+        ]
+        vsme_qs_S = [
+            "Organico: Avete i dati pronti su numero di dipendenti per genere, tipo di contratto (determinato/indeterminato) e orario?",
+            "Salute e Sicurezza: Monitorate il numero di infortuni sul lavoro e i giorni di assenza correlati?",
+            "Formazione: Siete in grado di fornire il numero medio di ore di formazione annue per dipendente?"
+        ]
+        vsme_qs_G = [
+            "Politiche: Esiste un documento scritto (anche semplice) su etica, corruzione o diritti umani?",
+            "Responsabilità: È stato identificato un referente interno (anche il titolare) responsabile delle decisioni ESG?"
+        ]
+        
+        c_v_E, c_v_S, c_v_G = st.tabs(["🌍 Ambiente (E)", "👥 Sociale (S)", "⚖️ Governance (G)"])
+        render_gap_list(vsme_qs_E, "E", c_v_E, "vsme")
+        render_gap_list(vsme_qs_S, "S", c_v_S, "vsme")
+        render_gap_list(vsme_qs_G, "G", c_v_G, "vsme")
+        
+        if st.button("Calcola Readiness VSME", use_container_width=True):
+            scores = []
+            for k, data in st.session_state.gap_answers.items():
+                if k.startswith("vsme"):
+                    scores.append(SCALE_VALUES[data["ans"]])
             
-        tot_score = sum(scores.values())
-        tot_max = sum(max_scores.values())
-        readiness_pct = (tot_score / tot_max * 100) if tot_max > 0 else 0
-        
-        st.subheader("📊 Esito Audit Simulato")
-        col_res1, col_res2 = st.columns([1, 2])
-        with col_res1:
-            st.metric("Readiness Globale", f"{readiness_pct:.1f}%")
-            if readiness_pct < 40: st.error("🔴 **Laggard (Alto Rischio).** Gravi lacune normative.")
-            elif readiness_pct < 75: st.warning("🟡 **In Transizione (Rischio Moderato).** Necessario formalizzare i processi.")
-            else: st.success("🟢 **Leader (Pronto per Audit).** Alta conformità ai requisiti EFRAG.")
-                
-            st.markdown("#### Completamento per Pilastro")
-            for p, name in [('E', 'Ambiente'), ('S', 'Sociale'), ('G', 'Governance')]:
-                p_pct = (scores[p] / max_scores[p] * 100) if max_scores[p] > 0 else 0
-                st.progress(p_pct/100, text=f"{name}: {p_pct:.0f}%")
-        with col_res2:
-            df_radar = pd.DataFrame(dict(
-                r=[(scores['E']/max_scores['E'])*100 if max_scores['E']>0 else 0, (scores['S']/max_scores['S'])*100 if max_scores['S']>0 else 0, (scores['G']/max_scores['G'])*100 if max_scores['G']>0 else 0],
-                theta=['Ambiente (E)', 'Sociale (S)', 'Governance (G)']
-            ))
-            fig_radar = px.line_polar(df_radar, r='r', theta='theta', line_close=True, range_r=[0,100], title="Profilo di Maturità ESG")
-            fig_radar.update_traces(fill='toself', line_color='#00B050' if readiness_pct > 50 else '#EF553B')
-            st.plotly_chart(fig_radar, use_container_width=True)
+            avg_score = sum(scores)/len(scores) if scores else 0
+            
+            st.subheader("📊 Data Availability Matrix (VSME)")
+            c1, c2 = st.columns([1, 2])
+            c1.metric("Punteggio Medio Qualità Dato", f"{avg_score:.1f} / 5.0")
+            
+            with c2:
+                if avg_score < 2.0:
+                    st.error("🔴 **Non pronti per il Modulo Base.** Il dato non esiste o non è tracciato.")
+                    st.markdown("*Suggerimento:* Inizia a raccogliere le bollette energetiche e organizza i dati HR (dipendenti per genere/contratto).")
+                elif avg_score < 4.0:
+                    st.warning("🟡 **Pronti per il Modulo Base.** Il dato esiste ma potrebbe essere parziale.")
+                    st.markdown("*Suggerimento:* Puoi pubblicare il tuo primo report volontario focalizzato sui KPI. Migliora la tracciabilità per passare al Modulo PAT.")
+                else:
+                    st.success("🟢 **Pronti per Modulo PAT o Business Partner.** Il dato è pronto, calcolato e documentato.")
+                    st.markdown("*Suggerimento:* Ottimo posizionamento! Hai i requisiti per rispondere con successo ai questionari di sostenibilità delle Banche e della GDO.")
+            
+            st.info("💡 **Passaggio da VSME a CSRD:** Aumentando la maturità della raccolta dati (es. includendo lo Scope 3 e la Doppia Materialità), l'azienda potrà effettuare l'upgrade allo standard ESRS preparandosi alle normative future o richieste di Capogruppo strutturate.")
 
-    # ---------------------------------------------------------
-    # 3. DOPPIA MATERIALITÀ (SOLO SE CSRD)
-    # ---------------------------------------------------------
-    if status_normativo in ["CSRD_GRANDE", "CSRD_PMI"]:
+    else:
+        # PERCORSO CSRD (GRANDI E PMI QUOTATE)
+        st.header("🔍 2. Readiness & Gap Analysis (ESRS)")
+        st.markdown("Valuta lo stato attuale dei processi aziendali. Seleziona il livello di maturità per ogni processo.")
+
+        gap_qs_E = [
+            "L'azienda ha definito un piano di transizione climatica allineato al target di 1.5°C?",
+            "Il calcolo delle emissioni Scope 1 e 2 è completo e basato su dati primari?",
+            "È stata effettuata una mappatura completa delle emissioni Scope 3 lungo la catena del valore?",
+            "I rischi fisici e di transizione legati al clima sono integrati nel sistema di gestione rischi (ERM)?",
+            "Esistono target ambientali misurabili, approvati dalla direzione e con scadenze definite?",
+            "I processi aziendali integrano principi di economia circolare e gestione dei rifiuti?",
+            "È stata eseguita una valutazione degli impatti sulla biodiversità e sugli ecosistemi nelle aree operative?",
+            "Il monitoraggio del consumo idrico e degli scarichi è attivo e documentato?",
+            "Il budget degli investimenti (CapEx) è stanziato per obiettivi di sostenibilità ambientale?",
+            "Esistono controlli rigorosi per eliminare o ridurre l'emissione di sostanze inquinanti?"
+        ]
+        gap_qs_S = [
+            "Esiste una procedura di 'due diligence' attiva per i diritti umani in tutta la catena di fornitura?",
+            "L'azienda monitora e pubblica il divario retributivo di genere (pay gap) con piani di azione correttivi?",
+            "Il sistema di gestione della salute e sicurezza copre tutti i lavoratori, inclusi i somministrati?",
+            "Viene garantito un piano di formazione continua su competenze chiave per ogni dipendente?",
+            "Esistono meccanismi formali di dialogo e consultazione con le rappresentanze dei lavoratori?",
+            "Il rispetto del salario dignitoso (living wage) è verificato per tutti i dipendenti e fornitori critici?",
+            "Sono attive politiche di inclusione che garantiscono pari opportunità per minoranze e categorie protette?",
+            "L'azienda valuta regolarmente l'impatto sociale delle sue attività sulle comunità locali?",
+            "Esistono protocolli per garantire la massima protezione dei dati e della privacy dei consumatori?",
+            "Il sistema di welfare aziendale risponde ai bisogni reali di equilibrio vita-lavoro (work-life balance)?"
+        ]
+        gap_qs_G = [
+            "Il Codice Etico e le politiche anti-corruzione sono stati comunicati e formati a tutti i livelli?",
+            "Gli incentivi economici dei dirigenti sono legati al raggiungimento di obiettivi ESG specifici?",
+            "Il canale di whistleblowing è esterno, anonimo e accessibile a tutti gli stakeholder?",
+            "I criteri di sostenibilità sono vincolanti per la selezione e la qualifica dei fornitori?",
+            "Esiste una politica trasparente riguardante le attività di lobbying e l'impegno politico?",
+            "L'azienda pubblica la rendicontazione fiscale dettagliata per ogni paese in cui opera?",
+            "I dati di sostenibilità sono sottoposti agli stessi controlli interni dei dati finanziari?",
+            "Esiste una procedura strutturata per la gestione e comunicazione di incidenti o crisi reputazionali?",
+            "La composizione del Consiglio di Amministrazione garantisce competenze ESG adeguate e diversità?",
+            "La strategia di sostenibilità è approvata e revisionata annualmente dall'organo di governo?"
+        ]
+
+        c_g_E, c_g_S, c_g_G = st.tabs(["🌍 Ambiente (E)", "👥 Sociale (S)", "⚖️ Governance (G)"])
+        render_gap_list(gap_qs_E, "E", c_g_E, "csrd")
+        render_gap_list(gap_qs_S, "S", c_g_S, "csrd")
+        render_gap_list(gap_qs_G, "G", c_g_G, "csrd")
+
+        if st.button("Calcola Livello di Readiness ESRS", use_container_width=True):
+            scores = {'E': 0, 'S': 0, 'G': 0}
+            max_scores = {'E': 0, 'S': 0, 'G': 0}
+            
+            for q_id, data in st.session_state.gap_answers.items():
+                if q_id.startswith("csrd"):
+                    val_num = SCALE_VALUES[data["ans"]]
+                    scores[data["pillar"]] += val_num
+                    max_scores[data["pillar"]] += 5 
+                
+            tot_score = sum(scores.values())
+            tot_max = sum(max_scores.values())
+            readiness_pct = (tot_score / tot_max * 100) if tot_max > 0 else 0
+            
+            st.subheader("📊 Esito Audit Simulato")
+            col_res1, col_res2 = st.columns([1, 2])
+            with col_res1:
+                st.metric("Readiness Globale", f"{readiness_pct:.1f}%")
+                if readiness_pct < 40: st.error("🔴 **Laggard (Alto Rischio).** Gravi lacune normative.")
+                elif readiness_pct < 75: st.warning("🟡 **In Transizione (Rischio Moderato).** Necessario formalizzare i processi.")
+                else: st.success("🟢 **Leader (Pronto per Audit).** Alta conformità ai requisiti EFRAG.")
+                    
+                st.markdown("#### Completamento per Pilastro")
+                for p, name in [('E', 'Ambiente'), ('S', 'Sociale'), ('G', 'Governance')]:
+                    p_pct = (scores[p] / max_scores[p] * 100) if max_scores[p] > 0 else 0
+                    st.progress(p_pct/100, text=f"{name}: {p_pct:.0f}%")
+            with col_res2:
+                df_radar = pd.DataFrame(dict(
+                    r=[(scores['E']/max_scores['E'])*100 if max_scores['E']>0 else 0, (scores['S']/max_scores['S'])*100 if max_scores['S']>0 else 0, (scores['G']/max_scores['G'])*100 if max_scores['G']>0 else 0],
+                    theta=['Ambiente (E)', 'Sociale (S)', 'Governance (G)']
+                ))
+                fig_radar = px.line_polar(df_radar, r='r', theta='theta', line_close=True, range_r=[0,100], title="Profilo di Maturità ESG")
+                fig_radar.update_traces(fill='toself', line_color='#00B050' if readiness_pct > 50 else '#EF553B')
+                st.plotly_chart(fig_radar, use_container_width=True)
+
         st.divider()
         st.header("🎯 3. Analisi di Doppia Materialità (DMA)")
         st.markdown("L'azienda deve valutare ogni tema ESRS. Il sistema calcola le coordinate per la Matrice facendo la media delle risposte alle domande specifiche (Asse X = Finanziario, Asse Y = Impatto).")
@@ -531,21 +572,21 @@ with t_triage:
             }
         }
 
-        t_dma_e, t_dma_s, t_dma_g, t_dma_all = st.tabs(["🌍 Ambiente (E)", "👥 Sociale (S)", "⚖️ Governance (G)", "📈 Risultato Matrice Totale"])
+        t_dma_e, t_dma_s, t_dma_g, t_dma_all = st.tabs(["🌍 Ambiente (E)", "👥 Sociale (S)", "⚖️ Governance (G)", "📈 Matrice Finale (DMA)"])
         
         calculated_dma_scores = {}
 
-        def render_dma_questions_for_pillar(pillar_dict, pillar_code, tab_context):
+        def render_dma_questions(pillar_dict, pillar_code, tab_context):
             with tab_context:
                 for topic, questions in pillar_dict.items():
-                    with st.expander(f"Valuta: {topic}"):
+                    with st.expander(f"Valuta Tema: {topic}"):
                         topic_imp_scores = []
                         topic_fin_scores = []
                         
                         for idx, (q_text, q_type) in enumerate(questions):
                             st.markdown(f"**[{'Impatto' if q_type == 'I' else 'Finanziario'}]** {q_text}")
                             ans = st.selectbox(
-                                "Valutazione:", 
+                                "Maturità Analisi:", 
                                 SCALE_OPTIONS, 
                                 key=f"dma_{pillar_code}_{topic}_{idx}", 
                                 label_visibility="collapsed"
@@ -558,20 +599,15 @@ with t_triage:
                         avg_imp = sum(topic_imp_scores)/len(topic_imp_scores) if topic_imp_scores else (sum(topic_fin_scores)/len(topic_fin_scores) if topic_fin_scores else 0)
                         avg_fin = sum(topic_fin_scores)/len(topic_fin_scores) if topic_fin_scores else avg_imp
                         
-                        calculated_dma_scores[topic] = {
-                            "pilastro": pillar_code,
-                            "impatto": avg_imp,
-                            "finanza": avg_fin
-                        }
-                        
-                        st.info(f"**Punteggio Calcolato per il Topic:** Impatto: {avg_imp:.1f}/5.0 | Finanziario: {avg_fin:.1f}/5.0")
+                        calculated_dma_scores[topic] = {"pilastro": pillar_code, "impatto": avg_imp, "finanza": avg_fin}
+                        st.info(f"**Score Calcolato (0-5):** Impatto: {avg_imp:.1f} | Finanziario: {avg_fin:.1f}")
 
-        render_dma_questions_for_pillar(dma_questions_dict["E"], "E", t_dma_e)
-        render_dma_questions_for_pillar(dma_questions_dict["S"], "S", t_dma_s)
-        render_dma_questions_for_pillar(dma_questions_dict["G"], "G", t_dma_g)
+        render_dma_questions(dma_questions_dict["E"], "E", t_dma_e)
+        render_dma_questions(dma_questions_dict["S"], "S", t_dma_s)
+        render_dma_questions(dma_questions_dict["G"], "G", t_dma_g)
 
         with t_dma_all:
-            st.subheader("Matrice di Doppia Materialità Risultante")
+            st.subheader("Matrice di Doppia Materialità")
             
             dma_data = []
             for topic, scores in calculated_dma_scores.items():
@@ -589,13 +625,13 @@ with t_triage:
                     df_dma, x="Finanza", y="Impatto", color="Pilastro",
                     color_discrete_map={'E': '#00B050', 'S': '#00B0F0', 'G': '#0070C0'},
                     size="Dim", hover_name="Tema", text="Tema",
-                    range_x=[-0.5, 5.5], range_y=[-0.5, 5.5], title="Matrice di Doppia Materialità ESRS"
+                    range_x=[-0.5, 5.5], range_y=[-0.5, 5.5], title="Distribuzione Temi ESRS"
                 )
                 
                 fig_dma.add_hline(y=2.45, line_dash="dash", line_color="red", annotation_text="Soglia Impatto")
                 fig_dma.add_vline(x=2.45, line_dash="dash", line_color="red", annotation_text="Soglia Finanza")
                 fig_dma.update_traces(textposition='top center', textfont_size=10)
-                fig_dma.update_layout(height=600, xaxis_title="Materialità Finanziaria (0-5)", yaxis_title="Materialità d'Impatto (0-5)")
+                fig_dma.update_layout(height=600, xaxis_title="Materialità Finanziaria (Outside-In)", yaxis_title="Materialità d'Impatto (Inside-Out)")
                 
                 fig_dma.add_shape(type="rect", x0=2.45, y0=-0.5, x1=5.5, y1=5.5, fillcolor="rgba(255,0,0,0.05)", line_width=0, layer="below")
                 fig_dma.add_shape(type="rect", x0=-0.5, y0=2.45, x1=5.5, y1=5.5, fillcolor="rgba(255,0,0,0.05)", line_width=0, layer="below")
@@ -606,7 +642,7 @@ with t_triage:
                 if temi_mat:
                     st.success(f"📌 **Temi Obbligatori da Rendicontare ({len(temi_mat)}/10):** " + ", ".join(temi_mat))
             else:
-                st.info("Compila i questionari nei tab precedenti (E, S, G) per generare la matrice.")
+                st.info("Compila i questionari nei tab (E, S, G) per generare la matrice.")
 
 # =====================================================================
 # TAB 2: ANALISI RISCHI (IPCC, NGFS, FATTORI DI EMISSIONE)
@@ -837,7 +873,7 @@ with t_cbam:
             c3.metric("Costo CBAM", f"€ {costo:.2f}", delta="Impatto OpEx", delta_color="inverse")
 
 # =====================================================================
-# TAB 5: DOWNLOAD E EXPORT
+# TAB 5: DOWNLOAD
 # =====================================================================
 with t_down:
     st.header("📥 Esportazione Dati")
