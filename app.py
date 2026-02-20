@@ -186,7 +186,6 @@ def load_nace_hierarchy(file_content_or_path="NACE_Rev.2.1.rdf"):
 @st.cache_data
 def generate_offline_data():
     data = []
-    # Scenari NGFS (Network for Greening the Financial System) ideali per il Rischio di Transizione
     for c in ['Stati Uniti', 'Cina', 'Germania', 'Italia', 'India']:
         for s in ['Net Zero 2050 (Ordinata)', 'Transizione Ritardata (Shock)', 'Politiche Attuali (BAU)']:
             for y in range(2020, 2055, 5):
@@ -386,7 +385,7 @@ with t_rischi:
             ], index=1)
             
         if st.button("📡 Esegui Simulazione Geospaziale"):
-            with st.spinner("Interrogazione satellite..."):
+            with st.spinner("Interrogazione satellite Copernicus..."):
                 geolocator = Nominatim(user_agent="CarbonApp")
                 try:
                     loc = geolocator.geocode(indirizzo)
@@ -402,87 +401,162 @@ with t_rischi:
                     
                     if "daily" in data:
                         temp_max_daily = np.array(data["daily"]["temperature_2m_max"])
-                        baseline_days = np.sum(temp_max_daily >= 35.0)
+                        precip_daily = np.array(data["daily"]["precipitation_sum"])
                         
-                        delta_t = 1.2 if "SSP1" in ipcc_scenario else (2.4 if "SSP2" in ipcc_scenario else 4.2)
+                        baseline_days = np.sum(temp_max_daily >= 35.0)
+                        baseline_precip = np.nansum(precip_daily)
+                        
+                        if "SSP1" in ipcc_scenario:
+                            delta_t, delta_p, risk_mult = 1.2, 1.05, 1.2
+                        elif "SSP2" in ipcc_scenario:
+                            delta_t, delta_p, risk_mult = 2.4, 1.15, 1.8
+                        else:
+                            delta_t, delta_p, risk_mult = 4.2, 1.30, 3.5
+                            
                         future_temp = temp_max_daily + delta_t
                         future_days = np.sum(future_temp >= 35.0)
                         
+                        base_flood = 5.0 if baseline_precip < 800 else (15.0 if baseline_precip < 1200 else 30.0)
+                        future_flood = base_flood * delta_p * risk_mult
+                        
+                        valore_asset = st.session_state.revenue * 0.1
+                        danno_atteso = (future_flood / 100) * valore_asset * 0.05
+                        
                         st.markdown("### 📊 Impatto Fisico Proiettato")
                         c1, c2, c3 = st.columns(3)
-                        c1.metric("🌊 Rischio Allagamento", "Elevato" if np.nanmax(temp_max_daily) < 30 else "Moderato")
-                        c2.metric("🌡️ Stress Termico 2050", f"{future_days} gg/anno", delta=f"+{future_days - baseline_days} gg", delta_color="inverse")
-                        c3.metric("📉 Danno Economico Atteso", f"€ {(st.session_state.revenue * 0.02):,.0f}")
+                        c1.metric("🌊 Rischio Allagamento Annuo", f"{min(future_flood, 99.9):.1f}%", delta=f"+{future_flood - base_flood:.1f}% vs baseline", delta_color="inverse")
+                        c2.metric("🌡️ Stress Termico (> 35°C)", f"{future_days} gg/anno", delta=f"+{future_days - baseline_days} gg", delta_color="inverse")
+                        c3.metric("📉 Danno Economico Atteso", f"€ {danno_atteso:,.0f}")
+                        
+                        df_plot = pd.DataFrame({"Data": data["daily"]["time"], "Oggi (°C)": temp_max_daily, "2050 (°C)": future_temp})
+                        fig_temp = px.line(df_plot, x="Data", y=["Oggi (°C)", "2050 (°C)"], title="Variazione Locale Temperature")
+                        fig_temp.add_hline(y=35, line_dash="dash", line_color="red")
+                        st.plotly_chart(fig_temp, use_container_width=True)
                 except Exception as e: 
                     st.error(f"Errore: {e}")
 
     with rt_transizione:
         st.subheader("1. Protocollo GHG (Inventario Emissioni)")
-        st.markdown("Definisci l'impronta carbonica aziendale. Puoi inserire le tonnellate manualmente nei totali, oppure calcolarle dinamicamente dai tuoi consumi.")
+        st.markdown("Definisci l'impronta carbonica aziendale. Puoi inserire le tonnellate manualmente o calcolarle dinamicamente dai tuoi consumi reali.")
 
-        # --- NUOVO: CALCOLATORE FATTORI DI EMISSIONE ---
+        # --- MOTORE FATTORI DI EMISSIONE MULTIDIMENSIONALE ---
         with st.expander("🧮 Calcolatore da Consumi Reali (Database Ufficiale ISPRA / DEFRA)", expanded=True):
             
-            # Database di Fattori di Emissione espanso basato sui manuali ufficiali
+            # Dizionario strutturato: per ogni fonte, permettiamo diverse unità di misura
             EMISSION_FACTORS = {
-                # SCOPE 1 - PRODUZIONE ENERGIA E CALORE (Impianti fissi, Caldaie, Cogenerazione)
-                "Scope 1 - Gas Naturale (Caldaie/Cogenerazione)": {"unità": "Standard Metri Cubi (Sm3)", "fattore": 1.98, "scope": "scope1"},
-                "Scope 1 - Gasolio da Riscaldamento": {"unità": "Litri", "fattore": 2.68, "scope": "scope1"},
-                "Scope 1 - GPL (Combustione fissa)": {"unità": "Litri", "fattore": 1.61, "scope": "scope1"},
-                "Scope 1 - Carbone (Steam Coal per produzione energia)": {"unità": "Tonnellate", "fattore": 2335.0, "scope": "scope1"}, # ISPRA: 93.07 kg/GJ * 25.08 GJ/t
-                "Scope 1 - Olio Combustibile (BTZ)": {"unità": "Tonnellate", "fattore": 3110.0, "scope": "scope1"},
-                
-                # SCOPE 1 - FLOTTA AZIENDALE E FUGHE
-                "Scope 1 - Gasolio (Autotrazione Flotta)": {"unità": "Litri", "fattore": 2.65, "scope": "scope1"},
-                "Scope 1 - Benzina (Autotrazione Flotta)": {"unità": "Litri", "fattore": 2.31, "scope": "scope1"},
-                "Scope 1 - Metano (Autotrazione Flotta)": {"unità": "Kg", "fattore": 2.75, "scope": "scope1"},
-                "Scope 1 - Fughe di Gas Refrigeranti (Es. R410a)": {"unità": "Kg ricaricati", "fattore": 2088.0, "scope": "scope1"},
-
-                # SCOPE 2 - ENERGIA ACQUISTATA
-                "Scope 2 - Elettricità (Mix Rete Italia - ISPRA)": {"unità": "kWh", "fattore": 0.259, "scope": "scope2"},
-                "Scope 2 - Elettricità (Mix Rete Media Europa)": {"unità": "kWh", "fattore": 0.230, "scope": "scope2"},
-                "Scope 2 - Elettricità (100% Rinnovabile con GO)": {"unità": "kWh", "fattore": 0.0, "scope": "scope2"},
-                "Scope 2 - Teleriscaldamento (Media)": {"unità": "kWh termici", "fattore": 0.170, "scope": "scope2"},
-
-                # SCOPE 3 - SUPPLY CHAIN, TRASPORTI E RIFIUTI
-                "Scope 3 - Trasporto Merci su Gomma (Camion Pesante)": {"unità": "Tonnellate-km (tkm)", "fattore": 0.11, "scope": "scope3"},
-                "Scope 3 - Trasporto Merci via Mare (Cargo)": {"unità": "Tonnellate-km (tkm)", "fattore": 0.015, "scope": "scope3"},
-                "Scope 3 - Voli Aerei (Passeggeri - Corto Raggio)": {"unità": "Passeggeri-km (pkm)", "fattore": 0.15, "scope": "scope3"},
-                "Scope 3 - Voli Aerei (Passeggeri - Lungo Raggio)": {"unità": "Passeggeri-km (pkm)", "fattore": 0.19, "scope": "scope3"},
-                "Scope 3 - Pernottamento in Hotel": {"unità": "Notti", "fattore": 15.0, "scope": "scope3"},
-                "Scope 3 - Acqua Potabile (Fornitura e Trattamento)": {"unità": "Metri Cubi (m3)", "fattore": 0.344, "scope": "scope3"},
-                "Scope 3 - Rifiuti Indifferenziati (Discarica)": {"unità": "Tonnellate", "fattore": 450.0, "scope": "scope3"},
-                "Scope 3 - Rifiuti Riciclati (Carta/Plastica/Vetro)": {"unità": "Tonnellate", "fattore": 21.0, "scope": "scope3"}
+                # SCOPE 1: Caldaie e Processi Fissi
+                "Scope 1 - Gas Naturale (Riscaldamento/Cogenerazione)": {
+                    "scope": "scope1",
+                    "unita": {"Standard Metri Cubi (Sm3)": 1.98, "GigaJoule (GJ)": 56.1, "Megawattora (MWh)": 202.0}
+                },
+                "Scope 1 - Gasolio (Riscaldamento/Gruppi Elettrogeni)": {
+                    "scope": "scope1",
+                    "unita": {"Litri (L)": 2.68, "Tonnellate (t)": 3150.0, "Chilogrammi (kg)": 3.15}
+                },
+                "Scope 1 - Carbone (Steam Coal per energia)": {
+                    "scope": "scope1",
+                    "unita": {"Tonnellate (t)": 2335.0, "Chilogrammi (kg)": 2.335} # Derivato da ISPRA (93.07 kg/GJ * 25.08 GJ/t)
+                },
+                "Scope 1 - Olio Combustibile (BTZ)": {
+                    "scope": "scope1",
+                    "unita": {"Tonnellate (t)": 3110.0, "Litri (L)": 2.95}
+                },
+                # SCOPE 1: Flotta e Fughe
+                "Scope 1 - Gasolio (Autotrazione Flotta)": {
+                    "scope": "scope1",
+                    "unita": {"Litri (L)": 2.65, "Tonnellate (t)": 3130.0}
+                },
+                "Scope 1 - Benzina (Autotrazione Flotta)": {
+                    "scope": "scope1",
+                    "unita": {"Litri (L)": 2.31, "Tonnellate (t)": 3130.0}
+                },
+                "Scope 1 - GPL (Autotrazione / Flotta)": {
+                    "scope": "scope1",
+                    "unita": {"Litri (L)": 1.61, "Chilogrammi (kg)": 3.0}
+                },
+                "Scope 1 - Fughe di Gas Refrigeranti (Es. R410a)": {
+                    "scope": "scope1",
+                    "unita": {"Chilogrammi ricaricati (kg)": 2088.0}
+                },
+                # SCOPE 2: Energia
+                "Scope 2 - Elettricità (Mix Rete Italia - ISPRA)": {
+                    "scope": "scope2",
+                    "unita": {"Kilowattora (kWh)": 0.259, "Megawattora (MWh)": 259.0}
+                },
+                "Scope 2 - Elettricità (Mix Rete Europa)": {
+                    "scope": "scope2",
+                    "unita": {"Kilowattora (kWh)": 0.230, "Megawattora (MWh)": 230.0}
+                },
+                "Scope 2 - Elettricità (100% Rinnovabile con GO)": {
+                    "scope": "scope2",
+                    "unita": {"Kilowattora (kWh)": 0.0, "Megawattora (MWh)": 0.0}
+                },
+                "Scope 2 - Teleriscaldamento": {
+                    "scope": "scope2",
+                    "unita": {"Kilowattora termici (kWh)": 0.170, "Megawattora termici (MWh)": 170.0, "GigaJoule (GJ)": 47.2}
+                },
+                # SCOPE 3: Supply Chain
+                "Scope 3 - Trasporto Merci (Camion Pesante)": {
+                    "scope": "scope3",
+                    "unita": {"Tonnellate-km (tkm)": 0.11, "Veicoli-km (vkm)": 0.85}
+                },
+                "Scope 3 - Trasporto Merci via Mare (Cargo)": {
+                    "scope": "scope3",
+                    "unita": {"Tonnellate-km (tkm)": 0.015}
+                },
+                "Scope 3 - Voli Aerei (Passeggeri)": {
+                    "scope": "scope3",
+                    "unita": {"Passeggeri-km (pkm)": 0.15, "Miglia (Miles)": 0.24}
+                },
+                "Scope 3 - Pernottamento in Hotel": {
+                    "scope": "scope3",
+                    "unita": {"Notti in camera": 15.0}
+                },
+                "Scope 3 - Acqua Potabile (Fornitura e Trattamento)": {
+                    "scope": "scope3",
+                    "unita": {"Metri Cubi (m3)": 0.344, "Litri (L)": 0.000344}
+                },
+                "Scope 3 - Rifiuti Indifferenziati (Discarica)": {
+                    "scope": "scope3",
+                    "unita": {"Tonnellate (t)": 450.0, "Chilogrammi (kg)": 0.45}
+                }
             }
             
-            ef_col1, ef_col2, ef_col3 = st.columns([2, 1, 1])
-            fonte_selezionata = ef_col1.selectbox("Seleziona Fonte di Emissione / Combustibile", list(EMISSION_FACTORS.keys()))
+            c_calc1, c_calc2, c_calc3 = st.columns([2, 1, 1])
             
-            unita = EMISSION_FACTORS[fonte_selezionata]["unità"]
-            fattore = EMISSION_FACTORS[fonte_selezionata]["fattore"]
+            # Selettore Categoria
+            fonte_selezionata = c_calc1.selectbox("Seleziona Categoria di Consumo", list(EMISSION_FACTORS.keys()))
+            
+            # Popolamento dinamico delle unità di misura in base alla scelta precedente
+            unita_disponibili = list(EMISSION_FACTORS[fonte_selezionata]["unita"].keys())
+            unita_selezionata = c_calc2.selectbox("Unità di Misura", unita_disponibili)
+            
+            # Recupero del fattore di conversione esatto (in kg di CO2)
+            fattore = EMISSION_FACTORS[fonte_selezionata]["unita"][unita_selezionata]
             scope_target = EMISSION_FACTORS[fonte_selezionata]["scope"]
             
-            consumo = ef_col2.number_input(f"Consumo Annuo ({unita})", min_value=0.0, value=0.0, step=100.0)
+            # Inserimento volume e calcolo
+            consumo = c_calc1.number_input(f"Volume Annuo Consumato ({unita_selezionata})", min_value=0.0, value=0.0, step=100.0)
+            co2_calcolata = (consumo * fattore) / 1000 # Divisione per 1000 per passare da Kg a Tonnellate
             
-            # Calcolo: Quantità * Fattore Emissione (che è espresso in kg) / 1000 = Tonnellate di CO2
-            co2_calcolata = (consumo * fattore) / 1000 
-            
-            ef_col3.metric(
-                "Emissioni Stimate", 
+            c_calc3.metric(
+                "Emissioni Generate", 
                 f"{co2_calcolata:,.2f} tCO2", 
-                help=f"Coefficiente di conversione applicato: {fattore} kgCO2 / {unita}"
+                help=f"Fattore ufficiale applicato: {fattore} kgCO2 per ogni {unita_selezionata}"
             )
             
-            if st.button(f"➕ Somma e Aggiorna Totale {scope_target.capitalize()}"):
+            # Pulsante di iniezione nel Session State
+            if st.button(f"➕ Somma ai totali dello {scope_target.capitalize()}"):
                 if co2_calcolata > 0:
                     st.session_state[scope_target] += int(co2_calcolata)
                     sync_from_scopes()
-                    st.success(f"Aggiunte {int(co2_calcolata)} tCO2 allo {scope_target.capitalize()}! I totali sottostanti sono stati aggiornati.")
+                    st.success(f"Registrate {int(co2_calcolata)} tCO2 nello {scope_target.capitalize()}! Tabella aggiornata.")
                     time.sleep(1.5)
                     st.rerun()
 
         st.divider()
         
+        # INPUT MANUALI O TOTALI RICEVUTI DAL CALCOLATORE
         c_ghg1, c_ghg2 = st.columns(2)
         with c_ghg1:
             st.number_input("Totale Scope 1: Emissioni Dirette (tCO2)", value=st.session_state.scope1, step=500, key='scope1', on_change=sync_from_scopes)
@@ -595,20 +669,20 @@ with t_tax:
         st.divider()
 
         attivita_lower = attivita.lower()
-        if "edifici" in attivita_lower or "costruzione" in attivita_lower: unita, soglia, target_unit = "m2 Gestiti", 80.0, "kWh/m2"
-        elif "trasporto" in attivita_lower or "veicoli" in attivita_lower: unita, soglia, target_unit = "tkm", 50.0, "gCO2/tkm"
-        elif "cemento" in attivita_lower: unita, soglia, target_unit = "Tonnellate prodotte", 0.72, "tCO2/ton"
-        elif "acciaio" in attivita_lower or "alluminio" in attivita_lower: unita, soglia, target_unit = "Tonnellate", 1.3, "tCO2/ton"
-        elif "energia" in attivita_lower or "elettricità" in attivita_lower: unita, soglia, target_unit = "MWh", 100.0, "gCO2/kWh"
-        elif "dati" in attivita_lower or "informatici" in attivita_lower: unita, soglia, target_unit = "Terabyte (TB)", 1.2, "PUE"
-        else: unita, soglia, target_unit = "Unità", 1.0, "tCO2/unità"
+        if "edifici" in attivita_lower or "costruzione" in attivita_lower: unita_tax, soglia, target_unit = "m2 Gestiti", 80.0, "kWh/m2"
+        elif "trasporto" in attivita_lower or "veicoli" in attivita_lower: unita_tax, soglia, target_unit = "tkm", 50.0, "gCO2/tkm"
+        elif "cemento" in attivita_lower: unita_tax, soglia, target_unit = "Tonnellate prodotte", 0.72, "tCO2/ton"
+        elif "acciaio" in attivita_lower or "alluminio" in attivita_lower: unita_tax, soglia, target_unit = "Tonnellate", 1.3, "tCO2/ton"
+        elif "energia" in attivita_lower or "elettricità" in attivita_lower: unita_tax, soglia, target_unit = "MWh", 100.0, "gCO2/kWh"
+        elif "dati" in attivita_lower or "informatici" in attivita_lower: unita_tax, soglia, target_unit = "Terabyte (TB)", 1.2, "PUE"
+        else: unita_tax, soglia, target_unit = "Unità", 1.0, "tCO2/unità"
 
         if is_eligible:
             st.markdown("### Screening Tecnico e Caricamento Prove (Document Vault)")
             col_sc1, col_sc2 = st.columns(2)
             with col_sc1:
                 st.markdown(f"**Test Substantial Contribution:** `<= {soglia} {target_unit}`")
-                prod = st.number_input(f"Volume Annuo ({unita})", value=0, step=10000)
+                prod = st.number_input(f"Volume Annuo ({unita_tax})", value=0, step=10000)
                 int_calc = (st.session_state.em_final / prod) if prod > 0 else 0
                 if target_unit.startswith("g"): int_calc *= 1000 
                 elif "PUE" in target_unit: int_calc = 1.0 + (st.session_state.em_final / 1000000)
@@ -729,7 +803,7 @@ with t_tax:
         with tab_opex:
             render_kpi_tab("OpEx", edited_df, st.session_state.opex)
 
-# --- TAB 4: CBAM SELF-ASSESSMENT TOOL (RICERCA A CASCATA DOGANALE) ---
+# --- TAB 4: CBAM SELF-ASSESSMENT TOOL ---
 with t_cbam:
     st.header("🌍 CBAM Self-Assessment Tool (Ricerca a Cascata)")
     st.markdown("Esplora la Nomenclatura Combinata Europea attraverso i menù a tendina. Il sistema ti avviserà in automatico se la merce selezionata fa parte dell'**Allegato I (Annex I) soggetto a CBAM**.")
