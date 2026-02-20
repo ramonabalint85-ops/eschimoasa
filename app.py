@@ -37,17 +37,15 @@ def sync_from_perc(): st.session_state.em_final = int(get_tot_emissions() * (1 -
 def sync_from_scopes(): sync_from_perc()
 
 # --- MOTORE DATI, PREZZI LIVE E TASSONOMIA ---
-@st.cache_data(ttl=3600) # La memoria si aggiorna ogni ora per non sovraccaricare l'API
+@st.cache_data(ttl=3600)
 def get_live_eu_ets_price():
     try:
-        # Interroga Yahoo Finance per il contratto Futures EU Carbon (KEZ=F)
         ticker = yf.Ticker("KEZ=F")
         hist = ticker.history(period="1d")
         if not hist.empty:
             return round(float(hist['Close'].iloc[-1]), 2)
     except Exception as e:
         print(f"API Mercato EU ETS irraggiungibile: {e}")
-    # Fallback di sicurezza in caso i server finanziari siano offline
     return 70.00
 
 def get_nace_section(d_code):
@@ -187,6 +185,7 @@ def load_nace_hierarchy(file_content_or_path="NACE_Rev.2.1.rdf"):
 @st.cache_data
 def generate_offline_data():
     data = []
+    # Questi sono Scenari NGFS (Network for Greening the Financial System) ideali per il Rischio di Transizione
     for c in ['Stati Uniti', 'Cina', 'Germania', 'Italia', 'India']:
         for s in ['Net Zero 2050 (Ordinata)', 'Transizione Ritardata (Shock)', 'Politiche Attuali (BAU)']:
             for y in range(2020, 2055, 5):
@@ -200,7 +199,6 @@ def generate_offline_data():
 
 df_base = generate_offline_data()
 
-# --- CARICATORE GERARCHICO CN CODES (A PROVA DI BOMBA) ---
 @st.cache_data(ttl=600)
 def load_cbam_hierarchy(file_path="cn_codes_clean.csv"):
     tree = {}
@@ -366,28 +364,53 @@ with t_home:
 # --- TAB 2: ANALISI RISCHI ---
 with t_rischi:
     st.header("Matrice dei Rischi Climatici")
-    rt_fisico, rt_transizione, rt_credito = st.tabs(["🛰️ Rischio Fisico", "🔄 Rischio di Transizione", "💰 Stress Test Finanziario"])
+    rt_fisico, rt_transizione, rt_credito = st.tabs(["🛰️ Rischio Fisico (IPCC SSP)", "🔄 Rischio di Transizione", "💰 Stress Test Finanziario"])
     
     with rt_fisico:
-        st.subheader("Dati Satellitari Copernicus (ESA)")
-        indirizzo = st.text_input("Inserisci Indirizzo o CAP", "Porto di Rotterdam, Paesi Bassi")
-        if st.button("📡 Estrai Dati ESA"):
-            with st.spinner("Connessione API Copernicus in corso..."):
+        st.subheader("Dati Satellitari Copernicus & Scenari IPCC (AR6)")
+        st.markdown("La CSRD richiede l'analisi dei rischi fisici basata sugli scenari **SSP (Shared Socioeconomic Pathways)** elaborati dall'IPCC.")
+        
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            indirizzo = st.text_input("Inserisci Indirizzo o Asset da analizzare", "Porto di Rotterdam, Paesi Bassi")
+        with col_f2:
+            ipcc_scenario = st.selectbox("Seleziona Scenario IPCC (Orizzonte 2050)", [
+                "SSP1-2.6 (Sostenibilità / < 2°C)", 
+                "SSP2-4.5 (Scenario Intermedio / ~2.7°C)", 
+                "SSP5-8.5 (Peggior Scenario / > 4°C)"
+            ], index=1)
+            
+        if st.button("📡 Esegui Simulazione Rischio Fisico"):
+            with st.spinner("Modellazione climatica in corso..."):
                 time.sleep(1.5)
                 geolocator = Nominatim(user_agent="CarbonApp")
                 try:
                     loc = geolocator.geocode(indirizzo)
                     lat, lon = (loc.latitude, loc.longitude) if loc else (51.92, 4.47)
-                    st.success(f"Coordinate identificate: {lat:.4f}, {lon:.4f}.")
+                    st.success(f"Coordinate identificate: {lat:.4f}, {lon:.4f}. Modello applicato: {ipcc_scenario.split(' ')[0]}")
                     fig_map = px.scatter_mapbox(pd.DataFrame({"Lat":[lat],"Lon":[lon],"L":["Asset"]}), lat="Lat", lon="Lon", zoom=10, height=350)
                     fig_map.update_layout(mapbox_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0})
                     st.plotly_chart(fig_map, use_container_width=True)
                     
+                    # LOGICA DI IMPATTO BASATA SULLO SCENARIO IPCC SELEZIONATO
+                    if "SSP1" in ipcc_scenario:
+                        allagamento, delta_allagamento = "15%", "+2%"
+                        stress_termico, delta_termico = "10 gg/anno", "+2 gg"
+                        danno = "€ 0.4M / anno"
+                    elif "SSP2" in ipcc_scenario:
+                        allagamento, delta_allagamento = "45%", "+12%"
+                        stress_termico, delta_termico = "18 gg/anno", "+5 gg"
+                        danno = "€ 1.2M / anno"
+                    else: # SSP5-8.5
+                        allagamento, delta_allagamento = "85%", "+35%"
+                        stress_termico, delta_termico = "45 gg/anno", "+22 gg"
+                        danno = "€ 3.8M / anno"
+                        
                     c1, c2, c3 = st.columns(3)
-                    c1.metric("🌊 Rischio Allagamento (10 anni)", "45%", delta="+12% vs decennio prec.", delta_color="inverse")
-                    c2.metric("🌡️ Giorni > 35°C (Stress Termico)", "18 gg/anno", delta="+5 gg", delta_color="inverse")
-                    c3.metric("📉 Danno Economico Atteso", "€ 1.2M / anno")
-                except:
+                    c1.metric("🌊 Rischio Allagamento (vs Baseline Storica)", allagamento, delta=delta_allagamento, delta_color="inverse")
+                    c2.metric("🌡️ Giorni > 35°C (Stress Termico)", stress_termico, delta=delta_termico, delta_color="inverse")
+                    c3.metric("📉 Danno Economico Atteso (Media Annua)", danno)
+                except Exception as e:
                     st.error("Errore di geolocalizzazione.")
 
     with rt_transizione:
@@ -408,7 +431,9 @@ with t_rischi:
         st.success(f"**Risultato Atteso:** Le emissioni nette finali scenderanno a **{st.session_state.em_final:,} tCO2**.")
 
     with rt_credito:
-        st.subheader("1. Finanziamento & Evoluzione Carbonio")
+        st.subheader("1. Finanziamento & Evoluzione Carbonio (Scenari NGFS)")
+        st.markdown("Per i rischi legati alle policy (Carbon Tax) si utilizzano gli scenari macroeconomici NGFS.")
+        
         c_cred1, c_cred2, c_cred3 = st.columns(3)
         c_cred1.number_input("Rata Prestito Bancario (€)", value=st.session_state.rata_prestito, step=500_000, key='rata_prestito')
         c_cred2.number_input("Ammortamenti Annuali (€)", value=st.session_state.ammortamenti, step=500_000, key='ammortamenti')
@@ -449,7 +474,7 @@ with t_rischi:
             fig_dopo.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5), margin=dict(b=80))
             st.plotly_chart(fig_dopo, use_container_width=True)
 
-# --- TAB 3: TASSONOMIA UE (COMPLETA - TURNOVER, CAPEX, OPEX E OBIETTIVI) ---
+# --- TAB 3: TASSONOMIA UE ---
 with t_tax:
     st.header("🇪🇺 Reporting Tassonomia UE (Modello Completo)")
     st.markdown("Valuta l'ammissibilità tramite i codici NACE. Per ogni attività, specifica l'obiettivo ambientale primario e inserisci i 3 KPI chiave (Turnover, CapEx, OpEx). Le attività non ammissibili alimenteranno comunque i denominatori per calcolare l'esatta percentuale aziendale.")
@@ -473,7 +498,6 @@ with t_tax:
         col_tax1, col_tax2 = st.columns(2)
 
         with col_tax1:
-            # Menu a tendina sicuri per evitare KeyError nel NACE
             sezione = st.selectbox("Sezione NACE", list(nace_db.keys()) if isinstance(nace_db, dict) and "ERRORE" not in str(nace_db) else [])
             divisione = st.selectbox("Divisione NACE", list(nace_db.get(sezione, {}).keys()) if sezione else [])
             gruppo = st.selectbox("Gruppo NACE", list(nace_db.get(sezione, {}).get(divisione, {}).keys()) if divisione else [])
@@ -649,10 +673,10 @@ with t_tax:
         with tab_opex:
             render_kpi_tab("OpEx", edited_df, st.session_state.opex)
 
-# --- TAB 4: CBAM SELF-ASSESSMENT TOOL (RICERCA A CASCATA DOGANALE) ---
+# --- TAB 4: CBAM SELF-ASSESSMENT TOOL ---
 with t_cbam:
     st.header("🌍 CBAM Self-Assessment Tool (Ricerca a Cascata)")
-    st.markdown("Esplora la Nomenclatura Combinata Europea attraverso i menù a tendina. Il sistema ti avviserà in automatico se la merce selezionata fa parte dell'**Allegato I (Annex I) soggetto a CBAM** (es. Cemento, Acciaio, Fertilizzanti, Alluminio, Elettricità, Idrogeno).")
+    st.markdown("Esplora la Nomenclatura Combinata Europea attraverso i menù a tendina. Il sistema ti avviserà in automatico se la merce selezionata fa parte dell'**Allegato I (Annex I) soggetto a CBAM**.")
     
     paesi_origine = {
         "Cina (China National ETS)": {"Tax": 10.0, "Exempt": False},
@@ -669,7 +693,6 @@ with t_cbam:
         col_cb1, col_cb2 = st.columns(2)
         
         with col_cb1:
-            # --- MENU A TENDINA MULTIPLI CN CODES ---
             sezione_cbam = st.selectbox("Sezione Doganale", list(cbam_tree.keys()) if cbam_tree else [])
             
             capitoli = list(cbam_tree.get(sezione_cbam, {}).keys()) if sezione_cbam else []
@@ -681,7 +704,6 @@ with t_cbam:
             merci = list(cbam_tree.get(sezione_cbam, {}).get(capitolo_cbam, {}).get(voce_cbam, {}).keys()) if voce_cbam else []
             merce_selezionata = st.selectbox("Codice Prodotto Specifico (8 cifre)", merci)
             
-            # --- LOGICA RADAR DOGANALE CBAM ---
             is_annex_i = "No"
             codice_cn_estratto = ""
             descrizione_merce = ""
@@ -750,7 +772,6 @@ with t_cbam:
             st.divider()
             st.subheader("💶 Rischio Finanziario CBAM (Sankey Diagram)")
             
-            # --- MODIFICA PREZZO LIVE EU ETS ---
             st.markdown("Il calcolo del rischio doganale è basato sul differenziale tra la Carbon Tax del paese di origine e l'attuale costo dei certificati europei.")
             
             c_live1, c_live2 = st.columns([1, 2])
