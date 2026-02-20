@@ -37,6 +37,7 @@ if 'tax_portfolio' not in st.session_state: st.session_state.tax_portfolio = []
 if 'cbam_portfolio' not in st.session_state: st.session_state.cbam_portfolio = [] 
 if 'gap_answers' not in st.session_state: st.session_state.gap_answers = {}
 
+# Inizializzazione punteggi Doppia Materialità
 if 'materiality_scores' not in st.session_state:
     st.session_state.materiality_scores = {
         "E1 - Cambiamento Climatico": {"pilastro": "E", "impatto": 1, "finanza": 1},
@@ -55,7 +56,10 @@ def get_tot_emissions(): return st.session_state.scope1 + st.session_state.scope
 def sync_from_perc(): st.session_state.em_final = int(get_tot_emissions() * (1 - st.session_state.perc_red / 100.0))
 def sync_from_scopes(): sync_from_perc()
 
-# --- MOTORE DATI, PREZZI LIVE E TASSONOMIA ---
+def sync_revenue_from_triage():
+    st.session_state.revenue = st.session_state.rev_triage_widget
+
+# --- MOTORE DATI E PREZZI LIVE ---
 @st.cache_data(ttl=3600)
 def get_live_eu_ets_price():
     try:
@@ -207,72 +211,84 @@ def check_cbam_category(cn_code):
     if cn.startswith(('7601', '7603', '7604', '7605', '7606', '7607', '7608', '7609')): return "Alluminio"
     return "Non Soggetto"
 
-# --- SIDEBAR GLOBALE (ORDINATA SECONDO RICHIESTA) ---
+# --- SIDEBAR GLOBALE (ACQUISIZIONE DATI) ---
 with st.sidebar:
-    st.title("⚙️ Acquisizione Dati Aziendali")
+    st.title("⚙️ Acquisizione Dati")
     
     st.header("1. Inserimento Manuale")
     st.selectbox("Paese Sede Legale", df_base['Paese'].unique(), index=3, key='selected_country') 
-    st.session_state.totale_attivo = st.number_input("Totale Attivo Stato Patrimoniale (€)", value=st.session_state.totale_attivo, step=1000000)
+    st.session_state.totale_attivo = st.number_input("Attivo Patrimoniale (€)", value=st.session_state.totale_attivo, step=1000000)
     st.session_state.revenue = st.number_input("Ricavi Netti / Turnover (€)", value=st.session_state.revenue, step=1000000)
-    st.session_state.dipendenti = st.number_input("Numero Medio Dipendenti", value=st.session_state.dipendenti, step=10)
-    st.session_state.quotata = st.checkbox("Società quotata su mercato regolamentato?", value=st.session_state.quotata)
+    st.session_state.dipendenti = st.number_input("Numero Dipendenti", value=st.session_state.dipendenti, step=10)
+    st.session_state.quotata = st.checkbox("Quotata su mercato europeo?", value=st.session_state.quotata)
     st.session_state.capex_totale = st.number_input("CapEx Totale (€)", value=st.session_state.capex_totale, step=1000000)
     st.session_state.opex = st.number_input("OpEx Totale (€)", value=st.session_state.opex, step=1000000)
     
     st.divider()
-    st.header("2. Sincronizzazione API (Mercato)")
-    ticker = st.text_input("Ticker Yahoo Finance (es. ENEL.MI)")
+    st.header("2. Sincronizzazione API (YFinance)")
+    st.markdown("Estrae Fatturato, Attivo, Dipendenti, CapEx e OpEx direttamente dai bilanci depositati in borsa.")
+    ticker = st.text_input("Ticker Aziendale (es. ENEL.MI)")
     
     if st.button("Sincronizza da Yahoo Finance"):
-        with st.spinner("Connessione ai server finanziari in corso..."):
+        with st.spinner("Scansione bilanci in corso..."):
             if not ticker: 
-                st.warning("⚠️ Inserisci un Ticker valido prima di sincronizzare.")
+                st.warning("Inserisci un Ticker.")
             else:
                 try:
                     stock = yf.Ticker(ticker)
+                    info = stock.info
+                    fins = stock.financials
+                    cf = stock.cash_flow
                     
-                    new_rev = None
-                    new_assets = None
-                    new_employees = None
+                    # 1. Base Info
+                    new_rev = info.get('totalRevenue') if info else None
+                    new_assets = info.get('totalAssets') if info else None
+                    new_emps = info.get('fullTimeEmployees') if info else None
                     
-                    # Tentativo 1: Metodo standard (.info)
-                    try:
-                        info = stock.info
-                        if info:
-                            new_rev = info.get('totalRevenue')
-                            new_assets = info.get('totalAssets')
-                            new_employees = info.get('fullTimeEmployees')
-                    except:
-                        pass # Ignora l'errore e passa al piano B
+                    # 2. Ricerca Ricavi nei Financials se .info fallisce
+                    if not new_rev and not fins.empty and 'Total Revenue' in fins.index:
+                        new_rev = fins.loc['Total Revenue'].dropna().iloc[0]
                         
-                    # Tentativo 2: Metodo bilanci (.financials) se .info è bloccato
-                    if not new_rev:
-                        fins = stock.financials
-                        if not fins.empty and 'Total Revenue' in fins.index:
-                            new_rev = fins.loc['Total Revenue'].dropna().iloc[0]
+                    # 3. Estrazione OpEx (Operating Expenses)
+                    new_opex = None
+                    if not fins.empty:
+                        if 'Operating Expense' in fins.index:
+                            new_opex = fins.loc['Operating Expense'].dropna().iloc[0]
+                        elif 'Total Operating Expenses' in fins.index:
+                            new_opex = fins.loc['Total Operating Expenses'].dropna().iloc[0]
+                        elif new_rev and 'Operating Income' in fins.index:
+                            op_inc = fins.loc['Operating Income'].dropna().iloc[0]
+                            new_opex = new_rev - op_inc
+                            
+                    # 4. Estrazione CapEx dal Cash Flow (Valore assoluto, poiché è uscita di cassa)
+                    new_capex = None
+                    if not cf.empty:
+                        if 'Capital Expenditure' in cf.index:
+                            new_capex = abs(cf.loc['Capital Expenditure'].dropna().iloc[0])
+                        elif 'Purchases Of Property Plant And Equipment' in cf.index:
+                            new_capex = abs(cf.loc['Purchases Of Property Plant And Equipment'].dropna().iloc[0])
                     
-                    # Se abbiamo trovato almeno i ricavi, aggiorniamo il sistema
                     if new_rev:
                         st.session_state.revenue = int(new_rev)
-                        # Se mancano attivo o dipendenti, facciamo una stima proporzionale
                         st.session_state.totale_attivo = int(new_assets) if new_assets else int(new_rev * 1.5)
-                        st.session_state.dipendenti = int(new_employees) if new_employees else max(50, int(new_rev / 500000))
+                        st.session_state.dipendenti = int(new_emps) if new_emps else max(50, int(new_rev / 500000))
+                        if new_opex and not pd.isna(new_opex): st.session_state.opex = int(new_opex)
+                        if new_capex and not pd.isna(new_capex): st.session_state.capex_totale = int(new_capex)
                         st.session_state.quotata = True
-                        st.success(f"✅ Dati estratti con successo per {ticker.upper()}!")
+                        
+                        st.success(f"✅ Dati finanziari (Inclusi CapEx/OpEx) estratti per {ticker.upper()}!")
                         time.sleep(1.5)
                         st.rerun()
                     else:
-                        st.warning(f"⚠️ Yahoo Finance non ha fornito dati per il ticker '{ticker}'. Potrebbe essere errato o delistato.")
-                        
+                        st.warning("⚠️ Dati non disponibili. Il ticker potrebbe essere errato o bloccato da Yahoo.")
                 except Exception as e:
-                    st.error("❌ Errore API: Yahoo Finance ha bloccato la connessione (Rate Limit) o il servizio è temporaneamente offline. Inserisci i dati manualmente o usa l'AI.")
+                    st.error("❌ Connessione rifiutata da Yahoo (Rate Limit). Inserisci i dati manualmente o usa l'AI.")
 
     st.divider()
-    st.header("3. AI Data Extraction (Bilanci PDF)")
+    st.header("3. AI Data Extraction (PDF)")
     api_key = st.text_input("OpenAI API Key (Opzionale)", type="password")
-    uploaded_pdf = st.file_uploader("Carica Bilancio CEE (PDF)", type="pdf")
-    if uploaded_pdf and st.button("Analizza con Intelligenza Artificiale"):
+    uploaded_pdf = st.file_uploader("Carica Bilancio (PDF)", type="pdf")
+    if uploaded_pdf and st.button("Analizza con AI"):
         with st.spinner("Estrazione dati con AI in corso..."):
             if not api_key:
                 time.sleep(2)
@@ -280,6 +296,7 @@ with st.sidebar:
                 st.session_state.revenue = 65_000_000
                 st.session_state.dipendenti = 310
                 st.session_state.opex = 40_000_000
+                st.session_state.capex_totale = 15_000_000
                 st.session_state.quotata = False
                 st.success("SIMULAZIONE AI COMPLETATA! Dati caricati.")
                 time.sleep(1)
@@ -289,13 +306,14 @@ with st.sidebar:
                     pdf_reader = PyPDF2.PdfReader(uploaded_pdf)
                     testo = "".join([page.extract_text() + "\n" for page in pdf_reader.pages[:15]])
                     client = OpenAI(api_key=api_key)
-                    prompt = f"""Estrai come JSON: "attivo" (intero), "revenue" (intero), "dipendenti" (intero), "opex" (intero). Testo: {testo[:15000]}"""
+                    prompt = f"""Estrai come JSON: "attivo" (intero), "revenue" (intero), "dipendenti" (intero), "opex" (intero), "capex" (intero). Testo: {testo[:15000]}"""
                     res = client.chat.completions.create(model="gpt-3.5-turbo-0125", messages=[{"role": "user", "content": prompt}], response_format={ "type": "json_object" })
                     dati = json.loads(res.choices[0].message.content)
                     st.session_state.totale_attivo = dati.get("attivo", 0)
                     st.session_state.revenue = dati.get("revenue", 0)
                     st.session_state.dipendenti = dati.get("dipendenti", 0)
                     st.session_state.opex = dati.get("opex", 0)
+                    st.session_state.capex_totale = dati.get("capex", 0)
                     st.success("Dati estratti dal PDF!")
                     time.sleep(1)
                     st.rerun()
@@ -305,9 +323,8 @@ with st.sidebar:
 # --- CORPO PRINCIPALE E TABS ---
 st.title("🌍 CarbonRisk AI Enterprise")
 
-# Rimossa la Dashboard, mantenuti i moduli operativi
 t_triage, t_rischi, t_tax, t_cbam, t_down = st.tabs([
-    "🧭 Triage, Gap & Materialità", "📊 Analisi Rischi", "🇪🇺 Tassonomia UE", "🌍 CBAM (Dogana Smart)", "📥 Report & Export"
+    "🧭 Triage & Materialità", "📊 Analisi Rischi (IPCC)", "🇪🇺 Tassonomia UE", "🌍 CBAM (Dogana Smart)", "📥 Report & Export"
 ])
 
 # =====================================================================
@@ -315,7 +332,7 @@ t_triage, t_rischi, t_tax, t_cbam, t_down = st.tabs([
 # =====================================================================
 with t_triage:
     st.header("🧭 1. Test di Assoggettabilità (CSRD vs VSME)")
-    st.markdown("Il sistema valuta l'obbligo normativo basandosi sui dati inseriti nella Sidebar a sinistra (Attivo, Ricavi, Dipendenti, Quotazione).")
+    st.markdown("Il sistema valuta l'obbligo normativo basandosi sui dati inseriti nella Sidebar (Attivo, Ricavi, Dipendenti, Quotazione).")
 
     # ALGORITMO DI TRIAGE
     soglia_attivo = st.session_state.totale_attivo > 25000000
@@ -324,8 +341,7 @@ with t_triage:
     
     score_grandi = sum([soglia_attivo, soglia_ricavi, soglia_dip])
     
-    # Box Riepilogo Dati
-    st.info(f"**Dati Attuali:** Attivo: {st.session_state.totale_attivo/1e6:.1f}M € | Ricavi: {st.session_state.revenue/1e6:.1f}M € | Dipendenti: {st.session_state.dipendenti} | Quotata: {'Sì' if st.session_state.quotata else 'No'}")
+    st.info(f"**Dati Baseline:** Attivo: {st.session_state.totale_attivo/1e6:.1f}M € | Ricavi: {st.session_state.revenue/1e6:.1f}M € | Dipendenti: {st.session_state.dipendenti} | Quotata: {'Sì' if st.session_state.quotata else 'No'}")
     
     if score_grandi >= 2:
         status_normativo = "CSRD_GRANDE"
@@ -346,7 +362,7 @@ with t_triage:
     # 2. GAP ANALYSIS DINAMICA
     # ---------------------------------------------------------
     st.header("🔍 2. Readiness & Gap Analysis")
-    st.markdown("Rispondi alle domande per valutare lo stato dei processi aziendali rispetto allo standard individuato.")
+    st.markdown("Valuta lo stato attuale dei processi aziendali rispetto allo standard individuato.")
 
     def render_gap_question(qid, text, pillar):
         ans = st.radio(f"**[{pillar}]** {text}", ["Sì (Documentato)", "In Corso (Informale)", "No"], horizontal=True, key=f"gap_{qid}")
@@ -410,30 +426,26 @@ with t_triage:
     if status_normativo in ["CSRD_GRANDE", "CSRD_PMI"]:
         st.divider()
         st.header("🎯 3. Analisi di Doppia Materialità (DMA)")
-        st.markdown("Essendo soggetta alla CSRD, l'azienda deve identificare quali temi rendicontare. Rispondi alle domande per determinare la materialità.")
+        st.markdown("La CSRD impone di valutare quali temi rendicontare. Rispondi per determinare la materialità.")
 
         col_dma1, col_dma2 = st.columns([1.2, 1])
 
         with col_dma1:
-            st.subheader("Valutazione dei Temi (Topic)")
-            options_dict = {"1 - Nullo": 1, "2 - Basso": 2, "3 - Medio": 3, "4 - Alto": 4, "5 - Critico": 5}
+            options_dict = {"1 - Nullo/Non Rilevante": 1, "2 - Basso": 2, "3 - Medio": 3, "4 - Alto": 4, "5 - Critico/Severo": 5}
             
             with st.container(height=600):
                 for topic, scores in st.session_state.materiality_scores.items():
                     with st.expander(f"**[{scores['pilastro']}]** {topic}"):
-                        st.markdown("**Impatto Ambientale/Sociale (Inside-Out)**")
-                        q_imp = st.selectbox(f"Qual è la scala e la gravità degli impatti dell'azienda su {topic}?", 
+                        q_imp = st.selectbox("Qual è la gravità degli impatti dell'azienda su ambiente/persone?", 
                                              list(options_dict.keys()), index=scores["impatto"]-1, key=f"q_imp_{topic}")
                         
-                        st.markdown("**Impatto Finanziario (Outside-In)**")
-                        q_fin = st.selectbox(f"Qual è l'entità dei rischi o opportunità finanziarie derivanti da {topic}?", 
+                        q_fin = st.selectbox("Qual è l'entità dei rischi/opportunità finanziarie derivanti da questo tema?", 
                                              list(options_dict.keys()), index=scores["finanza"]-1, key=f"q_fin_{topic}")
                         
                         st.session_state.materiality_scores[topic]["impatto"] = options_dict[q_imp]
                         st.session_state.materiality_scores[topic]["finanza"] = options_dict[q_fin]
 
         with col_dma2:
-            st.subheader("Matrice Risultante")
             dma_data = []
             for topic, scores in st.session_state.materiality_scores.items():
                 is_material = scores["impatto"] >= 3 or scores["finanza"] >= 3
@@ -449,7 +461,7 @@ with t_triage:
                 df_dma, x="Finanza", y="Impatto", color="Pilastro",
                 color_discrete_map={'E': '#00B050', 'S': '#00B0F0', 'G': '#0070C0'},
                 size="Dim", hover_name="Tema", text="Tema",
-                range_x=[0.5, 5.5], range_y=[0.5, 5.5]
+                range_x=[0.5, 5.5], range_y=[0.5, 5.5], title="Matrice di Doppia Materialità ESRS"
             )
             fig_dma.add_hline(y=2.95, line_dash="dash", line_color="red")
             fig_dma.add_vline(x=2.95, line_dash="dash", line_color="red")
@@ -691,44 +703,10 @@ with t_cbam:
             c3.metric("Costo CBAM", f"€ {costo:.2f}", delta="Impatto OpEx", delta_color="inverse")
 
 # =====================================================================
-# TAB 5: DOWNLOAD E REPORTISTICA (INCLUDE TUTTO)
+# TAB 5: DOWNLOAD
 # =====================================================================
 with t_down:
-    st.header("📥 Reportistica Integrata ed Export")
-    st.markdown("Genera documenti pronti per il management o esporta i file CSV grezzi per l'integrazione con i sistemi ERP aziendali.")
-    
-    col_d1, col_d2, col_d3 = st.columns(3)
-    
-    with col_d1:
-        st.subheader("1. Report Direzionale")
-        if st.button("🪄 Genera PDF Riepilogativo"):
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_font("Arial", 'B', 18)
-            pdf.cell(200, 15, txt="ESG & Climate Risk Report", ln=True, align='C')
-            
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(200, 10, txt=f"Status Normativo: {status_normativo}", ln=True)
-            pdf.cell(200, 10, txt=f"Ricavi: {st.session_state.revenue} EUR", ln=True)
-            pdf.cell(200, 10, txt=f"Totale Emissioni: {get_tot_emissions()} tCO2", ln=True)
-            
-            pdf_bytes = pdf.output(dest='S').encode('latin-1')
-            st.download_button("📥 Scarica (.PDF)", data=pdf_bytes, file_name="ESG_Report.pdf", mime="application/pdf")
-
-    with col_d2:
-        st.subheader("2. Tassonomia UE (Annex II)")
-        if st.session_state.tax_portfolio:
-            df_tax_export = pd.DataFrame(st.session_state.tax_portfolio)
-            csv_tax = df_tax_export.to_csv(index=False, sep=";")
-            st.download_button(label="📥 Scarica Annex II (.CSV)", data=csv_tax, file_name="EU_Taxonomy.csv", mime="text/csv")
-        else:
-            st.info("Compila la Tassonomia per esportare il file.")
-
-    with col_d3:
-        st.subheader("3. Registro CBAM")
-        if st.session_state.cbam_portfolio:
-            df_cbam_export = pd.DataFrame(st.session_state.cbam_portfolio)
-            csv_cbam_data = df_cbam_export.to_csv(index=False, sep=",") 
-            st.download_button(label="📥 Scarica Dichiarazione (.CSV)", data=csv_cbam_data, file_name="CBAM_Registry.csv", mime="text/csv")
-        else:
-            st.info("Compila le spedizioni CBAM per esportare.")
+    st.header("📥 Esportazione Dati")
+    if st.button("🪄 Genera PDF"):
+        pdf = FPDF(); pdf.add_page(); pdf.set_font("Arial", 'B', 18); pdf.cell(200, 15, txt="ESG Report", ln=True, align='C')
+        st.download_button("Scarica PDF", pdf.output(dest='S').encode('latin-1'), "ESG_Report.pdf")
