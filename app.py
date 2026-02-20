@@ -748,8 +748,8 @@ with t_cbam:
             
             c_cb1, c_cb2, c_cb3 = st.columns(3)
             c_cb1.metric("Emissioni da Dichiarare", f"{emissioni_importate_tot:,.0f} tCO2")
-            c_cb2.metric("Sconto Fiscale Estero", f"€ {sconto_tassa_totale:,.0f}")
-            c_cb3.metric("Costo Netto CBAM", f"€ {costo_netto_cbam:,.0f}", delta="Impatto su OpEx", delta_color="inverse")
+            c_cb2.metric("Sconto Fiscale Estero", f"€ {sconto_tassa_totale:,.2f}")
+            c_cb3.metric("Costo Netto CBAM", f"€ {costo_netto_cbam:,.2f}", delta="Impatto su OpEx", delta_color="inverse")
 
             labels = ["Fornitori Extra-UE", "Fornitori Esenti", "Tassa Doganale", "Sconto Estero", "CBAM Netto", "Azienda (OpEx)", "Utile Netto"]
             source, target = [0, 0, 1, 2, 2, 4, 5, 5], [2, 5, 5, 3, 4, 5, 5, 6]
