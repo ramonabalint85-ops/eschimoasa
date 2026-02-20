@@ -36,7 +36,20 @@ def get_tot_emissions(): return st.session_state.scope1 + st.session_state.scope
 def sync_from_perc(): st.session_state.em_final = int(get_tot_emissions() * (1 - st.session_state.perc_red / 100.0))
 def sync_from_scopes(): sync_from_perc()
 
-# --- MOTORE DATI, NACE E EU TAXONOMY JSON ---
+# --- MOTORE DATI, PREZZI LIVE E TASSONOMIA ---
+@st.cache_data(ttl=3600) # La memoria si aggiorna ogni ora per non sovraccaricare l'API
+def get_live_eu_ets_price():
+    try:
+        # Interroga Yahoo Finance per il contratto Futures EU Carbon (KEZ=F)
+        ticker = yf.Ticker("KEZ=F")
+        hist = ticker.history(period="1d")
+        if not hist.empty:
+            return round(float(hist['Close'].iloc[-1]), 2)
+    except Exception as e:
+        print(f"API Mercato EU ETS irraggiungibile: {e}")
+    # Fallback di sicurezza in caso i server finanziari siano offline
+    return 70.00
+
 def get_nace_section(d_code):
     try:
         d = int(d_code)
@@ -217,11 +230,9 @@ def load_cbam_hierarchy(file_path="cn_codes_clean.csv"):
                         clean_desc = desc[5:].strip() if desc.startswith(code[:4]) else desc
                         current_heading = f"{code[:4]} - {clean_desc}"
                     else:
-                        # Salta le righe amministrative (es. 01001100 se non sono sezioni)
                         if code[2:4] == '00' and not desc.upper().startswith(("SEZIONE", "CAPITOLO")):
                             continue
                             
-                        # CREAZIONE SICURA DELLE SOTTOCARTELLE (Previene i KeyError)
                         if current_section not in tree:
                             tree[current_section] = {}
                         if current_chapter not in tree[current_section]:
@@ -229,19 +240,17 @@ def load_cbam_hierarchy(file_path="cn_codes_clean.csv"):
                         if current_heading not in tree[current_section][current_chapter]:
                             tree[current_section][current_chapter][current_heading] = {}
                             
-                        # Inserimento foglia prodotto
                         product_label = f"{code} - {desc}"
                         tree[current_section][current_chapter][current_heading][product_label] = code
                 return tree
     except Exception as e:
         print(f"Errore caricamento Albero CN: {e}")
     
-    # Fallback sicuro in caso di file mancante
     return {"SEZIONE V - PRODOTTI MINERALI (FALLBACK)": {"CAPITOLO 25 - SALE, ZOLFO, TERRE E PIETRE": {"2523 - Cementi": {"25231000 - Cemento (Fallback)": "25231000"}}}}
 
 cbam_tree = load_cbam_hierarchy()
 
-# FUNZIONE LOGICA ANNEX I CBAM (Radar Doganale)
+# FUNZIONE LOGICA ANNEX I CBAM
 def check_cbam_category(cn_code):
     cn = str(cn_code).strip()
     if cn.startswith(('25070080', '2523')): return "Cemento"
@@ -660,7 +669,7 @@ with t_cbam:
         col_cb1, col_cb2 = st.columns(2)
         
         with col_cb1:
-            # --- MENU A TENDINA MULTIPLI CN CODES (Senza rischio KeyError) ---
+            # --- MENU A TENDINA MULTIPLI CN CODES ---
             sezione_cbam = st.selectbox("Sezione Doganale", list(cbam_tree.keys()) if cbam_tree else [])
             
             capitoli = list(cbam_tree.get(sezione_cbam, {}).keys()) if sezione_cbam else []
@@ -678,7 +687,6 @@ with t_cbam:
             descrizione_merce = ""
             
             if merce_selezionata:
-                # Estrazione sicura del codice dal dizionario
                 codice_cn_estratto = cbam_tree.get(sezione_cbam, {}).get(capitolo_cbam, {}).get(voce_cbam, {}).get(merce_selezionata, "")
                 descrizione_merce = merce_selezionata.split(" - ", 1)[-1]
                 
@@ -741,8 +749,22 @@ with t_cbam:
         if emissioni_importate_tot > 0:
             st.divider()
             st.subheader("💶 Rischio Finanziario CBAM (Sankey Diagram)")
+            
+            # --- MODIFICA PREZZO LIVE EU ETS ---
+            st.markdown("Il calcolo del rischio doganale è basato sul differenziale tra la Carbon Tax del paese di origine e l'attuale costo dei certificati europei.")
+            
+            c_live1, c_live2 = st.columns([1, 2])
+            with c_live1:
+                live_price = get_live_eu_ets_price()
+                prezzo_eu_ets = st.number_input(
+                    "Prezzo Mercato EU ETS (€/tCO2)", 
+                    min_value=0.0, 
+                    value=float(live_price), 
+                    step=1.0, 
+                    help="Estratto in tempo reale tramite le API Yahoo Finance (Ticker KEZ=F). Puoi sovrascriverlo per fare stress-test su scenari futuri."
+                )
+
             sconto_tassa_totale = sum(row["Emissioni (tCO2)"] * row["Tassa Estera"] for _, row in df_applicabile.iterrows())
-            prezzo_eu_ets = 70.0 
             costo_lordo_cbam = emissioni_importate_tot * prezzo_eu_ets
             costo_netto_cbam = max(0, costo_lordo_cbam - sconto_tassa_totale)
             
