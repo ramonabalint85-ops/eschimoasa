@@ -596,3 +596,251 @@ with t_down:
     if st.button("🪄 Genera PDF"):
         pdf = FPDF(); pdf.add_page(); pdf.set_font("Arial", 'B', 18); pdf.cell(200, 15, txt="ESG Report", ln=True, align='C')
         st.download_button("Scarica PDF", pdf.output(dest='S').encode('latin-1'), "ESG_Report.pdf")
+
+# =====================================================================
+# TAB 1: DASHBOARD
+# =====================================================================
+with t_home:
+    st.header("Financial & Climate Overview")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Turnover Totale", f"€ {st.session_state.revenue:,.0f}")
+    c2.metric("OpEx Totali", f"€ {st.session_state.opex:,.0f}")
+    c3.metric("Emissioni Totali", f"{get_tot_emissions():,.0f} tCO2")
+
+# =====================================================================
+# TAB 2: ANALISI RISCHI (IPCC, NGFS, FATTORI DI EMISSIONE MULTIDIMENSIONALI)
+# =====================================================================
+with t_rischi:
+    rt_fisico, rt_transizione, rt_credito = st.tabs(["🛰️ Rischio Fisico (IPCC)", "🔄 Rischio di Transizione (GHG)", "💰 Stress Test Finanziario (NGFS)"])
+    
+    with rt_fisico:
+        st.subheader("Modellazione Climatica ERA5 (10km) & Scenari IPCC 2050")
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            indirizzo = st.text_input("Inserisci Indirizzo o Asset", "Via del Corso, Roma")
+        with col_f2:
+            ipcc_scenario = st.selectbox("Scenario IPCC (Orizzonte 2050)", ["SSP1-2.6 (Sostenibilità)", "SSP2-4.5 (Intermedio)", "SSP5-8.5 (Fossile)"], index=1)
+            
+        if st.button("📡 Esegui Simulazione Geospaziale"):
+            with st.spinner("Interrogazione satellite Copernicus..."):
+                geolocator = Nominatim(user_agent="CarbonApp")
+                try:
+                    loc = geolocator.geocode(indirizzo)
+                    lat, lon = (loc.latitude, loc.longitude) if loc else (41.90, 12.49)
+                    
+                    fig_map = px.scatter_mapbox(pd.DataFrame({"Lat":[lat],"Lon":[lon],"L":["Asset"]}), lat="Lat", lon="Lon", zoom=12, height=300)
+                    fig_map.update_layout(mapbox_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0})
+                    st.plotly_chart(fig_map, use_container_width=True)
+                    
+                    url = f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date=2023-01-01&end_date=2023-12-31&daily=temperature_2m_max,precipitation_sum&timezone=auto"
+                    data = requests.get(url).json()
+                    
+                    if "daily" in data:
+                        temp_max_daily = np.array(data["daily"]["temperature_2m_max"])
+                        precip_daily = np.array(data["daily"]["precipitation_sum"])
+                        
+                        baseline_days = np.sum(temp_max_daily >= 35.0)
+                        baseline_precip = np.nansum(precip_daily)
+                        
+                        if "SSP1" in ipcc_scenario: delta_t, delta_p, risk_mult = 1.2, 1.05, 1.2
+                        elif "SSP2" in ipcc_scenario: delta_t, delta_p, risk_mult = 2.4, 1.15, 1.8
+                        else: delta_t, delta_p, risk_mult = 4.2, 1.30, 3.5
+                            
+                        future_temp = temp_max_daily + delta_t
+                        future_days = np.sum(future_temp >= 35.0)
+                        base_flood = 5.0 if baseline_precip < 800 else (15.0 if baseline_precip < 1200 else 30.0)
+                        future_flood = base_flood * delta_p * risk_mult
+                        danno_atteso = (future_flood / 100) * (st.session_state.revenue * 0.1) * 0.05
+                        
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("🌊 Rischio Allagamento Annuo", f"{min(future_flood, 99.9):.1f}%", delta=f"+{future_flood - base_flood:.1f}%", delta_color="inverse")
+                        c2.metric("🌡️ Stress Termico (> 35°C)", f"{future_days} gg/anno", delta=f"+{future_days - baseline_days} gg", delta_color="inverse")
+                        c3.metric("📉 Danno Economico Atteso", f"€ {danno_atteso:,.0f}")
+                except: st.error("Errore di geolocalizzazione.")
+
+    with rt_transizione:
+        st.subheader("1. Protocollo GHG (Inventario Emissioni)")
+        
+        # CALCOLATORE FATTORI DI EMISSIONE MULTIDIMENSIONALE
+        with st.expander("🧮 Calcolatore da Consumi Reali (Database ISPRA/DEFRA)", expanded=True):
+            EMISSION_FACTORS = {
+                "Scope 1 - Gas Naturale (Riscaldamento)": {"scope": "scope1", "unita": {"Metri Cubi (Sm3)": 1.98, "GigaJoule (GJ)": 56.1}},
+                "Scope 1 - Gasolio (Riscaldamento/Motori)": {"scope": "scope1", "unita": {"Litri (L)": 2.68, "Tonnellate (t)": 3150.0}},
+                "Scope 1 - Carbone (Produzione energia)": {"scope": "scope1", "unita": {"Tonnellate (t)": 2335.0, "Chilogrammi (kg)": 2.335}},
+                "Scope 1 - Benzina (Flotta)": {"scope": "scope1", "unita": {"Litri (L)": 2.31}},
+                "Scope 1 - Gas Refrigeranti (Fughe R410a)": {"scope": "scope1", "unita": {"Chilogrammi (kg)": 2088.0}},
+                "Scope 2 - Elettricità (Mix Italia)": {"scope": "scope2", "unita": {"kWh": 0.259, "MWh": 259.0}},
+                "Scope 2 - Elettricità (100% Rinnovabile GO)": {"scope": "scope2", "unita": {"kWh": 0.0, "MWh": 0.0}},
+                "Scope 3 - Trasporto Merci (Camion)": {"scope": "scope3", "unita": {"Tonnellate-km (tkm)": 0.11}},
+                "Scope 3 - Voli Aerei (Passeggeri)": {"scope": "scope3", "unita": {"Passeggeri-km (pkm)": 0.15}},
+                "Scope 3 - Rifiuti Indifferenziati": {"scope": "scope3", "unita": {"Tonnellate (t)": 450.0}}
+            }
+            
+            c_calc1, c_calc2, c_calc3 = st.columns([2, 1, 1])
+            fonte_sel = c_calc1.selectbox("Categoria Consumo", list(EMISSION_FACTORS.keys()))
+            
+            unita_disp = list(EMISSION_FACTORS[fonte_sel]["unita"].keys())
+            unita_sel = c_calc2.selectbox("Unità di Misura", unita_disp)
+            
+            fattore = EMISSION_FACTORS[fonte_sel]["unita"][unita_sel]
+            scope_target = EMISSION_FACTORS[fonte_sel]["scope"]
+            
+            consumo = c_calc1.number_input(f"Volume Annuo ({unita_sel})", min_value=0.0, step=100.0)
+            co2_calc = (consumo * fattore) / 1000 
+            
+            c_calc3.metric("Emissioni Generate", f"{co2_calc:,.2f} tCO2", help=f"Fattore: {fattore} kgCO2/{unita_sel}")
+            
+            if st.button(f"➕ Somma allo {scope_target.capitalize()}"):
+                if co2_calc > 0:
+                    st.session_state[scope_target] += int(co2_calc)
+                    sync_from_scopes()
+                    st.success(f"Aggiunte {int(co2_calc)} tCO2!")
+                    time.sleep(1)
+                    st.rerun()
+
+        st.divider()
+        c_ghg1, c_ghg2 = st.columns(2)
+        with c_ghg1:
+            st.number_input("Scope 1 (tCO2)", value=st.session_state.scope1, step=500, key='scope1', on_change=sync_from_scopes)
+            st.number_input("Scope 2 (tCO2)", value=st.session_state.scope2, step=500, key='scope2', on_change=sync_from_scopes)
+            st.number_input("Scope 3 (tCO2)", value=st.session_state.scope3, step=500, key='scope3', on_change=sync_from_scopes)
+        with c_ghg2:
+            st.info(f"### Impronta Lorda\n# {get_tot_emissions():,} tCO2")
+            st.slider("Efficacia Decarbonizzazione (%)", 0, 100, key='perc_red', on_change=sync_from_perc)
+            st.success(f"**Emissioni Nette:** {st.session_state.em_final:,} tCO2")
+
+    with rt_credito:
+        st.subheader("Stress Test Finanziario (Scenari NGFS)")
+        c_cred1, c_cred2 = st.columns(2)
+        with c_cred1:
+            st.number_input("Rata Prestito Transizione (€)", value=st.session_state.rata_prestito, step=100000, key='rata_prestito')
+        with c_cred2:
+            st.slider("Severità Policy Locali", 1.0, 3.0, value=st.session_state.policy_multiplier, step=0.1, key='policy_multiplier')
+
+        country_data = df_base[df_base['Paese'] == st.session_state.selected_country].copy()
+        plot_data = []
+        for _, row in country_data.iterrows():
+            eff_price = row['Prezzo Carbonio Base'] * st.session_state.policy_multiplier
+            profit = st.session_state.revenue - st.session_state.opex - (eff_price * st.session_state.em_final) - st.session_state.rata_prestito
+            plot_data.append({"Anno": row['Anno'], "Utile Netto (€)": profit, "Scenario": row['Scenario'], "Price": eff_price})
+        
+        df_plot = pd.DataFrame(plot_data)
+        st.plotly_chart(px.line(df_plot, x="Anno", y="Utile Netto (€)", color="Scenario", title="EBITDA Netto post-Carbon Tax"), use_container_width=True)
+
+# =====================================================================
+# TAB 3: TASSONOMIA UE
+# =====================================================================
+with t_tax:
+    st.header("🇪🇺 Reporting Tassonomia UE (Modello Completo)")
+    nace_db = load_nace_hierarchy("NACE_Rev.2.1.rdf")
+    tax_pref = load_taxonomy_json("taxonomy.json")
+
+    with st.expander("➕ Aggiungi Commessa / Attività", expanded=True):
+        erp_id = st.text_input("🏢 ID Commessa ERP")
+        col_tax1, col_tax2 = st.columns(2)
+        with col_tax1:
+            sez = st.selectbox("Sezione NACE", list(nace_db.keys()) if nace_db else [])
+            div = st.selectbox("Divisione NACE", list(nace_db.get(sez, {}).keys()) if sez else [])
+            grp = st.selectbox("Gruppo NACE", list(nace_db.get(sez, {}).get(div, {}).keys()) if div else [])
+            cls = st.selectbox("Classe NACE", list(nace_db.get(sez, {}).get(div, {}).get(grp, {}).keys()) if grp else [])
+            
+            nace_code = nace_db.get(sez, {}).get(div, {}).get(grp, {}).get(cls, "")
+            is_eligible = False
+            if nace_code and tax_pref:
+                is_eligible = any(nace_code.replace('.','').startswith(p) for p in tax_pref)
+            
+            st.markdown(f"**Status:** {'✅ Ammissibile' if is_eligible else 'ℹ️ Non Ammissibile'}")
+
+        with col_tax2:
+            obj_sc = st.selectbox("Obiettivo", ["CCM", "CCA", "WTR", "CE", "PPC", "BIO"])
+            val_t = st.number_input("Turnover (€)", step=10000)
+            val_c = st.number_input("CapEx (€)", step=10000)
+            val_o = st.number_input("OpEx (€)", step=10000)
+
+        if st.button("Inserisci in Registro"):
+            st.session_state.tax_portfolio.append({
+                "ERP": erp_id, "Attività": cls.split(" - ")[-1] if cls else "", "NACE": nace_code,
+                "Obiettivo": obj_sc, "Turnover (€)": val_t, "CapEx (€)": val_c, "OpEx (€)": val_o,
+                "Eligible (Y/N)": "Y" if is_eligible else "N", "Aligned": False # Default
+            })
+            st.rerun()
+
+    if st.session_state.tax_portfolio:
+        df_tax = pd.DataFrame(st.session_state.tax_portfolio)
+        edited_df = st.data_editor(df_tax, num_rows="dynamic", key="tax_editor")
+        st.session_state.tax_portfolio = edited_df.to_dict('records')
+        
+        if st.button("Svuota Registro Tassonomia"): st.session_state.tax_portfolio = []; st.rerun()
+
+        st.subheader("Dashboard")
+        den_turnover = max(st.session_state.revenue, edited_df["Turnover (€)"].sum())
+        val_aligned = edited_df[edited_df["Aligned"] == True]["Turnover (€)"].sum()
+        
+        c1, c2 = st.columns(2)
+        c1.metric("Fatturato Allineato (%)", f"{(val_aligned/den_turnover*100) if den_turnover>0 else 0:.2f}%")
+        c2.plotly_chart(go.Figure(data=[go.Pie(labels=["Aligned", "Not Aligned"], values=[val_aligned, den_turnover-val_aligned], hole=.4)]), use_container_width=True)
+
+# =====================================================================
+# TAB 4: CBAM DOGANA
+# =====================================================================
+with t_cbam:
+    st.header("🌍 CBAM Self-Assessment Tool")
+    cbam_tree = load_cbam_hierarchy()
+    paesi = {"Cina": 10.0, "India": 0.0, "UK": 45.0, "USA": 0.0, "UE": 0.0}
+
+    with st.expander("➕ Compila Spedizione Doganale", expanded=True):
+        col_cb1, col_cb2 = st.columns(2)
+        with col_cb1:
+            sez_cb = st.selectbox("Sezione", list(cbam_tree.keys()))
+            cap_cb = st.selectbox("Capitolo", list(cbam_tree.get(sez_cb, {}).keys()) if sez_cb else [])
+            voc_cb = st.selectbox("Voce", list(cbam_tree.get(sez_cb, {}).get(cap_cb, {}).keys()) if cap_cb else [])
+            mer_cb = st.selectbox("Prodotto", list(cbam_tree.get(sez_cb, {}).get(cap_cb, {}).get(voc_cb, {}).keys()) if voc_cb else [])
+            cod_cn = cbam_tree.get(sez_cb, {}).get(cap_cb, {}).get(voc_cb, {}).get(mer_cb, "")
+            
+        with col_cb2:
+            orig = st.selectbox("Origine", list(paesi.keys()))
+            em_cb = st.number_input("Emissioni (tCO2)", min_value=0.00, step=10.0)
+            val_cb = st.number_input("Valore (€)", min_value=0.00, step=100.0)
+
+        if st.button("Valuta e Registra"):
+            cat = check_cbam_category(cod_cn)
+            applies = "SÌ" if (cat != "Non Soggetto" and val_cb > 150 and orig != "UE") else "NO"
+            st.session_state.cbam_portfolio.append({
+                "Codice": cod_cn, "Merce": mer_cb[:40], "Origine": orig,
+                "Valore (€)": round(val_cb, 2), "Emissioni (tCO2)": round(em_cb, 2),
+                "CBAM APPLICABILE": applies, "Tax Estera": paesi[orig]
+            })
+            st.rerun()
+
+    if st.session_state.cbam_portfolio:
+        df_cbam = pd.DataFrame(st.session_state.cbam_portfolio)
+        st.dataframe(df_cbam, use_container_width=True, column_config={
+            "Emissioni (tCO2)": st.column_config.NumberColumn(format="%.2f"),
+            "Valore (€)": st.column_config.NumberColumn(format="%.2f")
+        })
+
+        if st.button("Svuota CBAM"): st.session_state.cbam_portfolio = []; st.rerun()
+
+        df_app = df_cbam[df_cbam["CBAM APPLICABILE"] == "SÌ"]
+        tot_em = df_app["Emissioni (tCO2)"].sum()
+        if tot_em > 0:
+            st.divider()
+            live_price = get_live_eu_ets_price()
+            ets = st.number_input("Prezzo EU ETS (€/tCO2)", value=float(live_price))
+            
+            sconto = sum(row["Emissioni (tCO2)"] * row["Tax Estera"] for _, row in df_app.iterrows())
+            costo = max(0, (tot_em * ets) - sconto)
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Emissioni", f"{tot_em:.2f} tCO2")
+            c2.metric("Sconto Estero", f"€ {sconto:.2f}")
+            c3.metric("Costo CBAM", f"€ {costo:.2f}", delta="Impatto OpEx", delta_color="inverse")
+
+# =====================================================================
+# TAB 5: DOWNLOAD
+# =====================================================================
+with t_down:
+    st.header("📥 Esportazione Dati")
+    if st.button("🪄 Genera PDF"):
+        pdf = FPDF(); pdf.add_page(); pdf.set_font("Arial", 'B', 18); pdf.cell(200, 15, txt="ESG Report", ln=True, align='C')
+        st.download_button("Scarica PDF", pdf.output(dest='S').encode('latin-1'), "ESG_Report.pdf")
