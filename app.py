@@ -37,6 +37,21 @@ if 'tax_portfolio' not in st.session_state: st.session_state.tax_portfolio = []
 if 'cbam_portfolio' not in st.session_state: st.session_state.cbam_portfolio = [] 
 if 'gap_answers' not in st.session_state: st.session_state.gap_answers = {}
 
+# Inizializzazione punteggi Doppia Materialità
+if 'materiality_scores' not in st.session_state:
+    st.session_state.materiality_scores = {
+        "E1 - Cambiamento Climatico": {"pilastro": "E", "impatto": 1, "finanza": 1},
+        "E2 - Inquinamento": {"pilastro": "E", "impatto": 1, "finanza": 1},
+        "E3 - Risorse Idriche e Marine": {"pilastro": "E", "impatto": 1, "finanza": 1},
+        "E4 - Biodiversità ed Ecosistemi": {"pilastro": "E", "impatto": 1, "finanza": 1},
+        "E5 - Uso Risorse ed Economia Circolare": {"pilastro": "E", "impatto": 1, "finanza": 1},
+        "S1 - Forza Lavoro Propria": {"pilastro": "S", "impatto": 1, "finanza": 1},
+        "S2 - Lavoratori nella Catena del Valore": {"pilastro": "S", "impatto": 1, "finanza": 1},
+        "S3 - Comunità Interessate": {"pilastro": "S", "impatto": 1, "finanza": 1},
+        "S4 - Consumatori ed Utenti Finali": {"pilastro": "S", "impatto": 1, "finanza": 1},
+        "G1 - Condotta Aziendale": {"pilastro": "G", "impatto": 1, "finanza": 1},
+    }
+
 def get_tot_emissions(): return st.session_state.scope1 + st.session_state.scope2 + st.session_state.scope3
 def sync_from_perc(): st.session_state.em_final = int(get_tot_emissions() * (1 - st.session_state.perc_red / 100.0))
 def sync_from_scopes(): sync_from_perc()
@@ -44,7 +59,7 @@ def sync_from_scopes(): sync_from_perc()
 def sync_revenue_from_triage():
     st.session_state.revenue = st.session_state.rev_triage_widget
 
-# --- MOTORE DATI E PREZZI LIVE ---
+# --- MOTORE DATI, PREZZI LIVE E TASSONOMIA ---
 @st.cache_data(ttl=3600)
 def get_live_eu_ets_price():
     try:
@@ -210,8 +225,9 @@ with st.sidebar:
 # --- CORPO PRINCIPALE E TABS ---
 st.title("🌍 CarbonRisk AI Enterprise")
 
-t_triage, t_home, t_rischi, t_tax, t_cbam, t_down = st.tabs([
-    "🧭 Triage & Gap Analysis", "🏠 Dashboard", "📊 Analisi Rischi", "🇪🇺 Tassonomia UE", "🌍 CBAM (Dogana Smart)", "📥 Report & Export"
+# Aggiunto il Tab della Doppia Materialità
+t_triage, t_dma, t_home, t_rischi, t_tax, t_cbam, t_down = st.tabs([
+    "🧭 Triage & Gap", "🎯 Doppia Materialità", "🏠 Dashboard", "📊 Analisi Rischi", "🇪🇺 Tassonomia UE", "🌍 CBAM (Dogana)", "📥 Report"
 ])
 
 # =====================================================================
@@ -235,7 +251,6 @@ with t_triage:
                 time.sleep(1)
                 st.rerun()
 
-    # FORM DATI DIMENSIONALI (SBLOCCATO)
     col_t1, col_t2 = st.columns(2)
     with col_t1:
         st.session_state.totale_attivo = st.number_input("Totale Attivo Stato Patrimoniale (€)", value=st.session_state.totale_attivo, step=1000000)
@@ -244,7 +259,6 @@ with t_triage:
         st.number_input("Ricavi Netti delle Vendite (€)", value=st.session_state.revenue, key="rev_triage_widget", step=1000000, on_change=sync_revenue_from_triage)
         st.session_state.quotata = st.checkbox("Società quotata su mercato regolamentato europeo?", value=st.session_state.quotata)
 
-    # ALGORITMO DI TRIAGE
     soglia_attivo = st.session_state.totale_attivo > 25000000
     soglia_ricavi = st.session_state.revenue > 50000000
     soglia_dip = st.session_state.dipendenti > 250
@@ -267,7 +281,6 @@ with t_triage:
 
     st.divider()
     
-    # GAP ANALYSIS
     st.header("🔍 2. Readiness & Gap Analysis")
     st.markdown("Valuta lo stato attuale dei processi aziendali (As-Is). Rispondi alle domande selezionate dal framework EFRAG per la tua classe dimensionale.")
 
@@ -312,7 +325,6 @@ with t_triage:
             render_gap_question("e_g3", "La remunerazione dei dirigenti è legata al raggiungimento di target di sostenibilità?", "G")
             render_gap_question("e_g4", "Esiste un sistema di Whistleblowing anonimo e sicuro per segnalare illeciti?", "G")
 
-    # LOGICA DI CALCOLO READINESS
     if st.button("Calcola Readiness % e Profilo di Rischio", use_container_width=True):
         scores = {'E': 0, 'S': 0, 'G': 0}
         max_scores = {'E': 0, 'S': 0, 'G': 0}
@@ -329,8 +341,8 @@ with t_triage:
         readiness_pct = (tot_score / tot_max * 100) if tot_max > 0 else 0
         
         st.subheader("📊 Esito Audit Simulato")
-        
         col_res1, col_res2 = st.columns([1, 2])
+        
         with col_res1:
             st.metric("Readiness Globale", f"{readiness_pct:.1f}%")
             if readiness_pct < 40:
@@ -356,6 +368,89 @@ with t_triage:
                                       title="Profilo di Maturità ESG", template="plotly_white")
             fig_radar.update_traces(fill='toself', line_color='#00B050' if readiness_pct > 50 else '#EF553B')
             st.plotly_chart(fig_radar, use_container_width=True)
+
+# =====================================================================
+# TAB 0.5: DOPPIA MATERIALITÀ (NUOVO)
+# =====================================================================
+with t_dma:
+    st.header("🎯 Analisi di Doppia Materialità (DMA)")
+    st.markdown("Identifica i temi (Topic) ESRS rilevanti per la tua azienda. Secondo la CSRD, un tema è **Materiale** se supera la soglia di rilevanza in almeno una delle due dimensioni (Impatto o Finanziaria).")
+
+    col_dma1, col_dma2 = st.columns([1, 1.5])
+
+    with col_dma1:
+        st.subheader("1. Valutazione (Scoring)")
+        st.markdown("Assegna un punteggio da 1 (Nullo) a 5 (Critico) per ogni tema.")
+        
+        pilastro_filtro = st.radio("Filtra Pilastro:", ["Tutti", "E (Ambiente)", "S (Sociale)", "G (Governance)"], horizontal=True)
+        
+        with st.container(height=500):
+            for topic, scores in st.session_state.materiality_scores.items():
+                if pilastro_filtro != "Tutti" and scores["pilastro"] not in pilastro_filtro:
+                    continue
+                
+                with st.expander(topic):
+                    st.session_state.materiality_scores[topic]["impatto"] = st.slider(
+                        f"Impatto Ambientale/Sociale (Inside-Out)", 
+                        1, 5, scores["impatto"], key=f"imp_{topic}"
+                    )
+                    st.session_state.materiality_scores[topic]["finanza"] = st.slider(
+                        f"Impatto Finanziario (Outside-In)", 
+                        1, 5, scores["finanza"], key=f"fin_{topic}"
+                    )
+
+    with col_dma2:
+        st.subheader("2. Matrice di Materialità")
+        
+        dma_data = []
+        for topic, scores in st.session_state.materiality_scores.items():
+            is_material = scores["impatto"] >= 3 or scores["finanza"] >= 3
+            dma_data.append({
+                "Tema": topic,
+                "Pilastro": scores["pilastro"],
+                "Materialità d'Impatto": scores["impatto"],
+                "Materialità Finanziaria": scores["finanza"],
+                "Status": "Materiale" if is_material else "Non Materiale",
+                "Dimensione": 30 if is_material else 10
+            })
+            
+        df_dma = pd.DataFrame(dma_data)
+        
+        color_map_dma = {'E': '#00B050', 'S': '#00B0F0', 'G': '#0070C0'}
+        
+        fig_dma = px.scatter(
+            df_dma, 
+            x="Materialità Finanziaria", 
+            y="Materialità d'Impatto", 
+            color="Pilastro",
+            color_discrete_map=color_map_dma,
+            size="Dimensione",
+            hover_name="Tema",
+            text="Tema",
+            range_x=[0.5, 5.5],
+            range_y=[0.5, 5.5],
+            title="Matrice di Doppia Materialità ESRS"
+        )
+        
+        fig_dma.add_hline(y=2.95, line_dash="dash", line_color="red", annotation_text="Soglia Impatto")
+        fig_dma.add_vline(x=2.95, line_dash="dash", line_color="red", annotation_text="Soglia Finanziaria")
+        
+        fig_dma.update_traces(textposition='top center', textfont_size=10)
+        fig_dma.update_layout(
+            height=450,
+            xaxis_title="Materialità Finanziaria (Rischio/Opportunità)",
+            yaxis_title="Materialità d'Impatto (Persone/Ambiente)",
+            plot_bgcolor='rgba(240, 240, 240, 0.5)'
+        )
+        fig_dma.add_shape(type="rect", x0=2.95, y0=2.95, x1=5.5, y1=5.5, fillcolor="rgba(255, 0, 0, 0.1)", line_width=0, layer="below")
+        
+        st.plotly_chart(fig_dma, use_container_width=True)
+        
+        temi_materiali = df_dma[df_dma["Status"] == "Materiale"]["Tema"].tolist()
+        if temi_materiali:
+            st.success(f"📌 **Temi da Rendicontare ({len(temi_materiali)}/10):** " + ", ".join(temi_materiali))
+        else:
+            st.info("Sposta gli slider per valutare quali temi superano la soglia di materialità (Valore ≥ 3).")
 
 # =====================================================================
 # TAB 1: DASHBOARD
