@@ -94,7 +94,7 @@ SCALE_VALUES = {
 
 # --- FUNZIONI DI ELABORAZIONE MAPPA E DATI ---
 def process_portfolio_dataframe(df):
-    """Elabora il dataframe per la mappa, standardizza le colonne e calcola il rischio"""
+    """Elabora il dataframe per la mappa, standardizza le colonne."""
     cols = [c.lower() for c in df.columns]
     
     if 'address' in cols: df.rename(columns={df.columns[cols.index('address')]: 'Address'}, inplace=True)
@@ -128,10 +128,8 @@ def process_portfolio_dataframe(df):
         df['Display_Size'] = (df['Size'] / max_size) * 30 + 5
     else:
         df['Display_Size'] = 10
-
-    np.random.seed(42)
-    df['Risk_Score'] = np.clip(100 - (df['Lat'] - 35) * 6 + np.random.randint(-15, 20, size=len(df)), 10, 100).astype(int)
     
+    # Il Risk Score viene calcolato in tempo reale in base allo scenario IPCC
     return df
 
 @st.cache_data(ttl=3600)
@@ -429,9 +427,20 @@ with t_triage:
         
         st.radio("Livello di Ambizione VSME:", ["Modulo Base", "Modulo Narrativo (PAT)", "Modulo Business Partner"], horizontal=True)
         
-        vsme_qs_E = ["Consumi Energetici suddivisi (rinnovabili vs fossili)?", "Emissioni GHG Scope 1 e Scope 2 misurate?", "Registro dei rifiuti aggiornato?"]
-        vsme_qs_S = ["Dati organico per genere, contratto e orario?", "Monitoraggio infortuni sul lavoro?", "Ore di formazione medie annue calcolate?"]
-        vsme_qs_G = ["Esiste una policy scritta su etica e diritti umani?", "Esiste un referente interno per la sostenibilità?"]
+        vsme_qs_E = [
+            "Consumi Energetici: Siete in grado di rendicontare il consumo totale di energia suddiviso per fonti (rinnovabili vs fossili)?",
+            "Emissioni GHG: Avete calcolato le emissioni Scope 1 e Scope 2 (usando le bollette energetiche)?",
+            "Rifiuti: Esiste un registro dei rifiuti che distingue tra pericolosi, non pericolosi e destinati al riciclo?"
+        ]
+        vsme_qs_S = [
+            "Organico: Avete i dati pronti su numero di dipendenti per genere, tipo di contratto e orario?",
+            "Salute e Sicurezza: Monitorate il numero di infortuni sul lavoro e i giorni di assenza correlati?",
+            "Formazione: Siete in grado di fornire il numero medio di ore di formazione annue per dipendente?"
+        ]
+        vsme_qs_G = [
+            "Politiche: Esiste un documento scritto (anche semplice) su etica, corruzione o diritti umani?",
+            "Responsabilità: È stato identificato un referente interno responsabile delle decisioni ESG?"
+        ]
         
         c_v_E, c_v_S, c_v_G = st.tabs(["🌍 Ambiente (E)", "👥 Sociale (S)", "⚖️ Governance (G)"])
         render_gap_list(vsme_qs_E, "E", c_v_E, "vsme")
@@ -635,17 +644,15 @@ with t_rischi:
     
     with rt_fisico:
         st.subheader("1. Mappatura Rischio Portfolio Asset")
-        st.markdown("Gli asset aziendali con coordinate vengono visualizzati automaticamente. La dimensione del punto indica l'importanza dell'impianto, il colore (dal verde al rosso) il rischio climatico fisico.")
         
-        # --- LOGICA DI CARICAMENTO AUTOMATICO ---
-        if st.session_state.portfolio_df.empty:
-            # Cerca automaticamente il file csv (generato da Colab) nella root
-            if os.path.exists("centrali_geolocalizzate.csv"):
+        # Caricamento Automatico
+        if st.session_state.portfolio_df.empty and os.path.exists("centrali_geolocalizzate.csv"):
+            try:
                 df_map = pd.read_csv("centrali_geolocalizzate.csv")
                 st.session_state.portfolio_df = process_portfolio_dataframe(df_map)
+            except: pass
                 
-        # Opzioni manuali racchiuse in un expander per mantenere pulita l'interfaccia
-        with st.expander("🔄 Aggiorna o Carica altri dati (Upload / GitHub)"):
+        with st.expander("🔄 Carica un portfolio diverso (Upload / GitHub)"):
             col_m1, col_m2 = st.columns([1, 1])
             with col_m1:
                 uploaded_portfolio = st.file_uploader("Carica File Coordinate (CSV/Excel)", type=['csv', 'xlsx'])
@@ -666,51 +673,58 @@ with t_rischi:
                     if not df_map.empty:
                         st.session_state.portfolio_df = process_portfolio_dataframe(df_map)
 
-        # Rendering Mappa 
         if not st.session_state.portfolio_df.empty:
             df_render = st.session_state.portfolio_df.copy()
             
-            # Filtro Dinamico per Operatore (se esiste la colonna)
+            st.markdown("### 🌍 Selezione Scenario Climatico (IPCC AR6)")
+            ipcc_scenario_mappa = st.radio(
+                "Proiezione climatica al 2050:",
+                ["SSP1-2.6 (+1.5°C)", "SSP2-4.5 (+2.4°C)", "SSP5-8.5 (+4.0°C)"],
+                horizontal=True
+            )
+            
+            # Ricalcolo dinamico del rischio in base allo scenario e Latitudine
+            np.random.seed(42) 
+            base_risk = np.clip(100 - (df_render['Lat'] - 35) * 6 + np.random.randint(-10, 15, size=len(df_render)), 10, 100)
+            if "SSP1" in ipcc_scenario_mappa: risk_multiplier = 0.7
+            elif "SSP2" in ipcc_scenario_mappa: risk_multiplier = 1.1
+            else: risk_multiplier = 1.6
+            df_render['Risk_Score'] = np.clip(base_risk * risk_multiplier, 10, 100).astype(int)
+
+            st.markdown("### 🏭 Filtro Impianti (Drill-Down)")
+            col_f1, col_f2 = st.columns(2)
+            
             if 'Operator' in df_render.columns:
-                ops = ["Tutti gli Operatori"] + sorted(df_render['Operator'].dropna().unique().tolist())
-                scelta_op = st.selectbox("Filtra Mappa per Operatore:", ops)
+                ops = ["Tutti gli Operatori"] + sorted(df_render['Operator'].dropna().astype(str).unique().tolist())
+                with col_f1:
+                    scelta_op = st.selectbox("1. Seleziona Operatore:", ops)
+                
                 if scelta_op != "Tutti gli Operatori":
                     df_render = df_render[df_render['Operator'] == scelta_op]
+                    if 'Name' in df_render.columns:
+                        centrali = ["Tutte le centrali"] + sorted(df_render['Name'].dropna().astype(str).unique().tolist())
+                        with col_f2:
+                            scelta_centrale = st.selectbox("2. Seleziona Centrale Specifica:", centrali)
+                        
+                        if scelta_centrale != "Tutte le centrali":
+                            df_render = df_render[df_render['Name'] == scelta_centrale]
+                else:
+                    with col_f2: st.selectbox("2. Seleziona Centrale Specifica:", ["Seleziona prima un operatore"], disabled=True)
 
-            st.markdown("### 🔴 Rischio Climatico Fisico sugli Asset (Scala 0-100)")
+            st.markdown(f"#### 🔴 Livello di Rischio Fisico: Scenario {ipcc_scenario_mappa.split(' ')[0]}")
             fig_portfolio = px.scatter_mapbox(
                 df_render, lat="Lat", lon="Lon", hover_name="Name",
                 hover_data={"Lat": False, "Lon": False, "ID": True, "Operator": True, "Address": True, "Risk_Score": True, "Size": True, "Display_Size": False},
                 color="Risk_Score", size="Display_Size", color_continuous_scale=px.colors.diverging.RdYlGn_r,
-                size_max=25, zoom=4.5, mapbox_style="carto-positron", height=600
+                range_color=[10, 100], size_max=25, zoom=4.5 if len(df_render) > 1 else 10, mapbox_style="carto-positron", height=600
             )
             fig_portfolio.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
             st.plotly_chart(fig_portfolio, use_container_width=True)
             
-            # Mostra tabella raw sotto la mappa per verifica
-            with st.expander("Mostra dati tabellari impianti"):
+            with st.expander("Mostra dati tabellari"):
                 st.dataframe(df_render[['ID', 'Name', 'Operator', 'Address', 'Lat', 'Lon', 'Risk_Score']], use_container_width=True)
         else:
-            st.info("Nessun dato geolocalizzato trovato in automatico. Apri il menù 'Aggiorna' qui sopra per caricare il tuo CSV.")
-
-        st.divider()
-
-        # Simulazione Singola
-        st.subheader("2. Simulazione Climatica Singolo Indirizzo (IPCC AR6)")
-        col_f1, col_f2 = st.columns(2)
-        with col_f1: indirizzo = st.text_input("Inserisci Indirizzo Specifico", "Via Roma, Milano")
-        with col_f2: ipcc_scenario = st.selectbox("Scenario", ["SSP1-2.6", "SSP2-4.5", "SSP5-8.5"], index=2)
-        
-        if st.button("Calcola Rischio Indirizzo"):
-            geolocator = Nominatim(user_agent="CarbonApp")
-            try:
-                loc = geolocator.geocode(indirizzo)
-                lat, lon = (loc.latitude, loc.longitude) if loc else (45.46, 9.19)
-                fig_map_singolo = px.scatter_mapbox(pd.DataFrame({"Lat":[lat],"Lon":[lon],"L":["Asset"]}), lat="Lat", lon="Lon", zoom=12, height=300, mapbox_style="carto-positron")
-                fig_map_singolo.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
-                st.plotly_chart(fig_map_singolo, use_container_width=True)
-                st.success(f"Analisi completata. L'indirizzo {indirizzo} ha un aumento previsto di +15 giorni di calore estremo nello scenario {ipcc_scenario}.")
-            except: st.error("Errore di geolocalizzazione.")
+            st.info("Nessun dato geolocalizzato trovato. Inserisci il file centrali_geolocalizzate.csv nella cartella.")
 
     with rt_transizione:
         st.subheader("Calcolatore GHG da Consumi (Fattori ISPRA/DEFRA)")
@@ -767,7 +781,7 @@ with t_rischi:
         st.plotly_chart(px.line(pd.DataFrame(plot_data), x="Anno", y="Utile Netto (€)", color="Scenario", title="EBITDA Netto post-Carbon Tax"), use_container_width=True)
 
 # =====================================================================
-# TAB 3 E 4: TASSONOMIA E CBAM (CODICE ORIGINALE RIPRISTINATO 100%)
+# TAB 3 E 4: TASSONOMIA E CBAM
 # =====================================================================
 with t_tax:
     st.header("🇪🇺 Reporting Tassonomia UE")
