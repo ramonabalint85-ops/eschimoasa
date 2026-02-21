@@ -91,7 +91,7 @@ SCALE_VALUES = {
     "Completamente (100% - Allineato a ESRS e verificabile)": 5
 }
 
-# --- FUNZIONI DI ELABORAZIONE MAPPA E DATI (PULIZIA NLP + JITTERING) ---
+# --- FUNZIONI DI ELABORAZIONE MAPPA E DATI (Rimosso il Jittering per usare coord esatte) ---
 def process_portfolio_dataframe(df):
     cols = [c.lower() for c in df.columns]
     
@@ -107,10 +107,7 @@ def process_portfolio_dataframe(df):
     if lat_col and lon_col:
         df.rename(columns={lat_col: 'Lat', lon_col: 'Lon'}, inplace=True)
         df = df.dropna(subset=['Lat', 'Lon'])
-        # JITTERING: Dispersione spaziale per evitare sovrapposizioni esatte
-        np.random.seed(42)
-        df['Lat'] = df['Lat'].astype(float) + np.random.uniform(-0.02, 0.02, size=len(df))
-        df['Lon'] = df['Lon'].astype(float) + np.random.uniform(-0.02, 0.02, size=len(df))
+        # Nessun Jittering: usiamo la precisione assoluta ottenuta da Colab
     else:
         st.error("Il file deve contenere colonne 'Lat' e 'Lon'.")
         return pd.DataFrame()
@@ -119,7 +116,7 @@ def process_portfolio_dataframe(df):
     if 'ID' not in df.columns: df['ID'] = df.index.astype(str)
     if 'Address' not in df.columns: df['Address'] = "Indirizzo non disponibile"
     
-    # NLP CLEANING: Normalizzazione Operatori (maiuscolo, rimuove punti/virgole)
+    # NLP CLEANING: Normalizzazione Operatori per menu a tendina pulito
     if 'Operator' not in df.columns: 
         df['Operator'] = "Operatore Non Specificato"
     else:
@@ -366,8 +363,19 @@ with st.sidebar:
     api_key = st.text_input("OpenAI API Key (Opzionale)", type="password")
     uploaded_pdf = st.file_uploader("Carica Bilancio CEE", type="pdf")
     if uploaded_pdf and st.button("Analizza con AI"):
-        st.success("SIMULAZIONE AI COMPLETATA!")
-        time.sleep(1)
+        with st.spinner("Elaborazione testo tramite AI in corso..."):
+            time.sleep(2)
+            st.session_state.totale_attivo = 32_000_000
+            st.session_state.revenue = 65_000_000
+            st.session_state.dipendenti = 310
+            st.session_state.opex = 40_000_000
+            st.session_state.capex_totale = 15_000_000
+            st.session_state.sector = "Utilities"
+            st.session_state.industry = "Renewable Electricity"
+            st.session_state.quotata = False
+            st.success("SIMULAZIONE AI COMPLETATA! Dati caricati.")
+            time.sleep(1)
+            st.rerun()
 
 # --- CORPO PRINCIPALE E TABS ---
 st.title("🌍 CarbonRisk AI Enterprise")
@@ -435,9 +443,42 @@ with t_triage:
 
     else:
         st.header("🔍 2. Readiness & Gap Analysis (ESRS)")
-        gap_qs_E = ["Piano di transizione 1.5°C?", "Scope 1 e 2 completi?", "Scope 3 mappato?", "Rischi fisici in ERM?", "Target ambientali misurabili?", "Economia circolare integrata?", "Impatto biodiversità valutato?", "Monitoraggio idrico attivo?", "CapEx per sostenibilità?", "Controlli inquinanti?"]
-        gap_qs_S = ["Due diligence diritti umani?", "Monitoraggio pay gap genere?", "Gestione salute e sicurezza?", "Formazione continua?", "Dialogo coi lavoratori?", "Living wage verificato?", "Politiche di inclusione?", "Impatto su comunità locali?", "Protezione privacy?", "Work-life balance?"]
-        gap_qs_G = ["Codice Etico comunicato?", "Incentivi ESG ai dirigenti?", "Whistleblowing anonimo?", "Criteri ESG per fornitori?", "Lobbying trasparente?", "Report fiscale pubblico?", "Controlli interni dati ESG?", "Gestione crisi reputazionali?", "CdA con competenze ESG?", "Strategia approvata?"]
+        gap_qs_E = [
+            "L'azienda ha definito un piano di transizione climatica allineato al target di 1.5°C?",
+            "Il calcolo delle emissioni Scope 1 e 2 è completo e basato su dati primari?",
+            "È stata effettuata una mappatura completa delle emissioni Scope 3 lungo la catena del valore?",
+            "I rischi fisici e di transizione legati al clima sono integrati nel sistema di gestione rischi (ERM)?",
+            "Esistono target ambientali misurabili, approvati dalla direzione e con scadenze definite?",
+            "I processi aziendali integrano principi di economia circolare e gestione dei rifiuti?",
+            "È stata eseguita una valutazione degli impatti sulla biodiversità e sugli ecosistemi nelle aree operative?",
+            "Il monitoraggio del consumo idrico e degli scarichi è attivo e documentato?",
+            "Il budget degli investimenti (CapEx) è stanziato per obiettivi di sostenibilità ambientale?",
+            "Esistono controlli rigorosi per eliminare o ridurre l'emissione di sostanze inquinanti?"
+        ]
+        gap_qs_S = [
+            "Esiste una procedura di 'due diligence' attiva per i diritti umani in tutta la catena di fornitura?",
+            "L'azienda monitora e pubblica il divario retributivo di genere (pay gap) con piani di azione correttivi?",
+            "Il sistema di gestione della salute e sicurezza copre tutti i lavoratori, inclusi i somministrati?",
+            "Viene garantito un piano di formazione continua su competenze chiave per ogni dipendente?",
+            "Esistono meccanismi formali di dialogo e consultazione con le rappresentanze dei lavoratori?",
+            "Il rispetto del salario dignitoso (living wage) è verificato per tutti i dipendenti e fornitori critici?",
+            "Sono attive politiche di inclusione che garantiscono pari opportunità per minoranze e categorie protette?",
+            "L'azienda valuta regolarmente l'impatto sociale delle sue attività sulle comunità locali?",
+            "Esistono protocolli per garantire la massima protezione dei dati e della privacy dei consumatori?",
+            "Il sistema di welfare aziendale risponde ai bisogni reali di equilibrio vita-lavoro (work-life balance)?"
+        ]
+        gap_qs_G = [
+            "Il Codice Etico e le politiche anti-corruzione sono stati comunicati e formati a tutti i livelli?",
+            "Gli incentivi economici dei dirigenti sono legati al raggiungimento di obiettivi ESG specifici?",
+            "Il canale di whistleblowing è esterno, anonimo e accessibile a tutti gli stakeholder?",
+            "I criteri di sostenibilità sono vincolanti per la selezione e la qualifica dei fornitori?",
+            "Esiste una politica trasparente riguardante le attività di lobbying e l'impegno politico?",
+            "L'azienda pubblica la rendicontazione fiscale dettagliata per ogni paese in cui opera?",
+            "I dati di sostenibilità sono sottoposti agli stessi controlli interni dei dati finanziari?",
+            "Esiste una procedura strutturata per la gestione e comunicazione di incidenti o crisi reputazionali?",
+            "La composizione del Consiglio di Amministrazione garantisce competenze ESG adeguate e diversità?",
+            "La strategia di sostenibilità è approvata e revisionata annualmente dall'organo di governo?"
+        ]
 
         c_g_E, c_g_S, c_g_G = st.tabs(["🌍 Ambiente", "👥 Sociale", "⚖️ Governance"])
         render_gap_list(gap_qs_E, "E", c_g_E, "csrd")
@@ -463,6 +504,9 @@ with t_triage:
                 if readiness_pct < 40: st.error("🔴 Laggard (Alto Rischio). Gravi lacune normative.")
                 elif readiness_pct < 75: st.warning("🟡 In Transizione (Rischio Moderato).")
                 else: st.success("🟢 Leader (Pronto per Audit). Alta conformità.")
+                for p, name in [('E', 'Ambiente'), ('S', 'Sociale'), ('G', 'Governance')]:
+                    p_pct = (scores[p] / max_scores[p] * 100) if max_scores[p] > 0 else 0
+                    st.progress(p_pct/100, text=f"{name}: {p_pct:.0f}%")
             with col_res2:
                 df_radar = pd.DataFrame(dict(
                     r=[(scores['E']/max_scores['E'])*100 if max_scores['E']>0 else 0, (scores['S']/max_scores['S'])*100 if max_scores['S']>0 else 0, (scores['G']/max_scores['G'])*100 if max_scores['G']>0 else 0],
@@ -529,7 +573,7 @@ with t_triage:
                 st.plotly_chart(fig_dma, use_container_width=True)
 
 # =====================================================================
-# TAB 2: ANALISI RISCHI E MAPPATura ASSET
+# TAB 2: ANALISI RISCHI E MAPPATURA ASSET
 # =====================================================================
 with t_rischi:
     rt_fisico, rt_transizione, rt_credito = st.tabs(["🛰️ Mappa Asset & Rischio Fisico", "🔄 Transizione (GHG)", "💰 Stress Test (NGFS)"])
@@ -537,12 +581,13 @@ with t_rischi:
     with rt_fisico:
         st.subheader("1. Mappatura Rischio Portfolio Asset")
         
-        if st.session_state.portfolio_df.empty and os.path.exists("centrali_geolocalizzate.csv"):
+        # Caricamento Automatico Silenzioso del file generato da Colab
+        if st.session_state.portfolio_df.empty and os.path.exists("centrali_operative_esatte.csv"):
             try:
-                df_map = pd.read_csv("centrali_geolocalizzate.csv")
+                df_map = pd.read_csv("centrali_operative_esatte.csv")
                 st.session_state.portfolio_df = process_portfolio_dataframe(df_map)
             except: pass
-                
+            
         with st.expander("🔄 Carica un portfolio impianti diverso (Upload / GitHub)"):
             col_m1, col_m2 = st.columns([1, 1])
             with col_m1: uploaded_portfolio = st.file_uploader("Carica File CSV", type=['csv'])
@@ -608,7 +653,7 @@ with t_rischi:
             with st.expander("Mostra dati tabellari"):
                 st.dataframe(df_render[['ID', 'Name', 'Operator', 'Address', 'Lat', 'Lon', 'Risk_Score']], use_container_width=True)
         else:
-            st.info("Nessun dato geolocalizzato trovato in automatico. Assicurati di avere 'centrali_geolocalizzate.csv' nella cartella.")
+            st.info("Nessun dato geolocalizzato trovato in automatico. Inserisci il file nella cartella o fai l'upload.")
 
     with rt_transizione:
         st.subheader("Calcolatore GHG (Fattori ISPRA/DEFRA)")
