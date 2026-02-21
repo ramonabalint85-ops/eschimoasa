@@ -91,7 +91,7 @@ SCALE_VALUES = {
     "Completamente (100% - Allineato a ESRS e verificabile)": 5
 }
 
-# --- FUNZIONI DI ELABORAZIONE MAPPA E DATI (Rimosso il Jittering per usare coord esatte) ---
+# --- FUNZIONI DATI E MAPPA ---
 def process_portfolio_dataframe(df):
     cols = [c.lower() for c in df.columns]
     
@@ -107,7 +107,6 @@ def process_portfolio_dataframe(df):
     if lat_col and lon_col:
         df.rename(columns={lat_col: 'Lat', lon_col: 'Lon'}, inplace=True)
         df = df.dropna(subset=['Lat', 'Lon'])
-        # Nessun Jittering: usiamo la precisione assoluta ottenuta da Colab
     else:
         st.error("Il file deve contenere colonne 'Lat' e 'Lon'.")
         return pd.DataFrame()
@@ -116,7 +115,6 @@ def process_portfolio_dataframe(df):
     if 'ID' not in df.columns: df['ID'] = df.index.astype(str)
     if 'Address' not in df.columns: df['Address'] = "Indirizzo non disponibile"
     
-    # NLP CLEANING: Normalizzazione Operatori per menu a tendina pulito
     if 'Operator' not in df.columns: 
         df['Operator'] = "Operatore Non Specificato"
     else:
@@ -125,16 +123,12 @@ def process_portfolio_dataframe(df):
         df['Operator'] = df['Operator'].str.replace(r'\s+', ' ', regex=True).str.strip()
 
     alloc_col = next((c for c in df.columns if 'alloc' in c.lower() or 'capacit' in c.lower()), None)
-    if alloc_col:
-        df['Size'] = pd.to_numeric(df[alloc_col], errors='coerce').fillna(5000)
-    else:
-        df['Size'] = 5000
+    if alloc_col: df['Size'] = pd.to_numeric(df[alloc_col], errors='coerce').fillna(5000)
+    else: df['Size'] = 5000
     
     max_size = df['Size'].max()
-    if max_size > 0:
-        df['Display_Size'] = (df['Size'] / max_size) * 30 + 5
-    else:
-        df['Display_Size'] = 10
+    if max_size > 0: df['Display_Size'] = (df['Size'] / max_size) * 30 + 5
+    else: df['Display_Size'] = 10
     
     return df
 
@@ -254,9 +248,7 @@ def load_cbam_hierarchy(file_path="cn_codes_clean.csv"):
             return tree
     except: pass
     return {"SEZIONE V (FALLBACK)": {"CAPITOLO 25": {"2523 - Cementi": {"25231000 - Cemento": "25231000"}}}}
-
 cbam_tree = load_cbam_hierarchy()
-
 def check_cbam_category(cn_code):
     cn = str(cn_code).strip()
     if cn.startswith(('25070080', '2523')): return "Cemento"
@@ -267,35 +259,32 @@ def check_cbam_category(cn_code):
     if cn.startswith(('7601', '7603', '7604', '7605', '7606', '7607', '7608', '7609')): return "Alluminio"
     return "Non Soggetto"
 
-# --- SIDEBAR GLOBALE ---
+
+# =====================================================================
+# SIDEBAR GLOBALE (INPUT DATI AZIENDALI)
+# =====================================================================
 with st.sidebar:
-    st.title("⚙️ Acquisizione Dati Base")
+    st.title("⚙️ Dati Baseline Aziendali", help="Pannello di controllo per l'inserimento dei dati macroeconomici. I dati qui inseriti influenzano l'algoritmo di Triage, gli stress test finanziari e la reportistica finale.")
     
-    st.header("1. Sincronizzazione API (YFinance)")
-    ticker = st.text_input("Ticker Aziendale (es. ENEL.MI)")
+    st.header("1. Sincronizzazione API (YFinance)", help="Modulo di automazione collegato ai server di mercato Yahoo Finance. Estrae in tempo reale le info di bilancio, settore e localizzazione evitando l'inserimento manuale.")
+    ticker = st.text_input("Ticker Aziendale (es. ENEL.MI)", help="Inserisci il codice di quotazione borsa. L'algoritmo navigherà il bilancio (Income Statement e Cash Flow) per trovare Ricavi, Dipendenti, OpEx e CapEx.")
     
-    if st.button("Estrai Dati da Yahoo Finance"):
+    if st.button("Estrai Dati da Yahoo Finance", help="Richiama l'API yfinance."):
         with st.spinner("Scaricando dati dal mercato..."):
             if not ticker: 
                 st.warning("⚠️ Inserisci un Ticker valido.")
             else:
                 try:
                     stock = yf.Ticker(ticker)
-                    info = stock.info
-                    fins = stock.financials
-                    cf = stock.cash_flow
-                    
+                    info = stock.info; fins = stock.financials; cf = stock.cash_flow
                     new_rev, new_assets, new_emps = None, None, None
                     new_opex, new_capex = None, None
                     new_sec, new_ind, new_country = "", "", ""
                     
                     if info:
-                        new_rev = info.get('totalRevenue')
-                        new_assets = info.get('totalAssets')
-                        new_emps = info.get('fullTimeEmployees')
-                        new_sec = info.get('sector', '')
-                        new_ind = info.get('industry', '')
-                        new_country = info.get('country', '')
+                        new_rev = info.get('totalRevenue'); new_assets = info.get('totalAssets')
+                        new_emps = info.get('fullTimeEmployees'); new_sec = info.get('sector', '')
+                        new_ind = info.get('industry', ''); new_country = info.get('country', '')
 
                     if not fins.empty:
                         if not new_rev:
@@ -313,56 +302,50 @@ with st.sidebar:
                         if capex_keys: new_capex = abs(cf.loc[capex_keys[0]].dropna().iloc[0])
                     
                     if new_rev:
-                        st.session_state.revenue = int(new_rev)
-                        st.session_state.totale_attivo = int(new_assets) if new_assets else int(new_rev * 1.5)
+                        st.session_state.revenue = int(new_rev); st.session_state.totale_attivo = int(new_assets) if new_assets else int(new_rev * 1.5)
                         st.session_state.dipendenti = int(new_emps) if new_emps else max(50, int(new_rev / 500000))
                         if new_opex and not pd.isna(new_opex): st.session_state.opex = int(new_opex)
                         if new_capex and not pd.isna(new_capex): st.session_state.capex_totale = int(new_capex)
                         st.session_state.quotata = True
-                        
                         if new_sec:
                             if new_sec not in st.session_state.gics_sectors: st.session_state.gics_sectors[new_sec] = []
                             if new_ind and new_ind not in st.session_state.gics_sectors[new_sec]: st.session_state.gics_sectors[new_sec].append(new_ind)
                             st.session_state.sector = new_sec; st.session_state.industry = new_ind
-                            
                         if new_country:
                             cmap = {'Italy': 'Italia', 'United States': 'Stati Uniti', 'China': 'Cina', 'Germany': 'Germania', 'India': 'India'}
                             if new_country in cmap: st.session_state.selected_country = cmap[new_country]
-                        
                         st.success(f"✅ Dati estratti per {ticker.upper()}!")
-                        time.sleep(1.5)
-                        st.rerun()
-                    else: st.warning("⚠️ Yahoo Finance non ha restituito dati utili.")
-                except Exception as e: st.error("❌ Connessione bloccata da Yahoo (Rate Limit).")
+                        time.sleep(1.5); st.rerun()
+                    else: st.warning("⚠️ Nessun dato trovato.")
+                except: st.error("❌ Connessione bloccata.")
 
     st.divider()
-    
-    st.header("2. Inserimento Manuale")
-    st.selectbox("Paese Sede Legale", df_base['Paese'].unique(), index=list(df_base['Paese'].unique()).index(st.session_state.selected_country) if st.session_state.selected_country in df_base['Paese'].unique() else 3, key='selected_country') 
+    st.header("2. Inserimento Manuale", help="Opzione per inserire o sovrascrivere manualmente i dati estratti.")
+    st.selectbox("Paese Sede Legale", df_base['Paese'].unique(), index=list(df_base['Paese'].unique()).index(st.session_state.selected_country) if st.session_state.selected_country in df_base['Paese'].unique() else 3, key='selected_country', help="Indispensabile per applicare il corretto prezzo del carbonio (Carbon Pricing) negli stress test del Database NGFS.") 
     
     curr_sec_idx = list(st.session_state.gics_sectors.keys()).index(st.session_state.sector) if st.session_state.sector in st.session_state.gics_sectors else 0
-    sel_sec = st.selectbox("Settore GICS", list(st.session_state.gics_sectors.keys()), index=curr_sec_idx)
+    sel_sec = st.selectbox("Settore GICS", list(st.session_state.gics_sectors.keys()), index=curr_sec_idx, help="Global Industry Classification Standard. La scelta del settore orienta la valutazione delle tematiche di sostenibilità (Materialità).")
     st.session_state.sector = sel_sec
     
     inds = st.session_state.gics_sectors[st.session_state.sector]
     curr_ind_idx = inds.index(st.session_state.industry) if st.session_state.industry in inds else 0
-    sel_ind = st.selectbox("Industria Specifica", inds, index=curr_ind_idx)
+    sel_ind = st.selectbox("Industria Specifica", inds, index=curr_ind_idx, help="Sottocategoria GICS per un'analisi di mercato più granulare.")
     st.session_state.industry = sel_ind
     
-    st.session_state.totale_attivo = st.number_input("Attivo Patrimoniale (€)", value=st.session_state.totale_attivo, step=1000000)
-    st.session_state.revenue = st.number_input("Ricavi Netti / Turnover (€)", value=st.session_state.revenue, step=1000000)
-    st.session_state.dipendenti = st.number_input("Numero Dipendenti", value=st.session_state.dipendenti, step=10)
-    st.session_state.quotata = st.checkbox("Quotata su mercato europeo?", value=st.session_state.quotata)
-    st.session_state.capex_totale = st.number_input("CapEx Totale (€)", value=st.session_state.capex_totale, step=1000000)
-    st.session_state.opex = st.number_input("OpEx Totale (€)", value=st.session_state.opex, step=1000000)
+    st.session_state.totale_attivo = st.number_input("Attivo Patrimoniale (€)", value=st.session_state.totale_attivo, step=1000000, help="Somma dello Stato Patrimoniale. Parametro normativo per decidere l'assoggettabilità alla direttiva CSRD.")
+    st.session_state.revenue = st.number_input("Ricavi Netti / Turnover (€)", value=st.session_state.revenue, step=1000000, help="Valore della produzione. Usato sia nel Triage normativo che come denominatore per la Tassonomia UE (Fatturato Allineato).")
+    st.session_state.dipendenti = st.number_input("Numero Dipendenti", value=st.session_state.dipendenti, step=10, help="Forza lavoro media (FTE). Terzo parametro per il calcolo dell'obbligo CSRD.")
+    st.session_state.quotata = st.checkbox("Quotata su mercato europeo?", value=st.session_state.quotata, help="Le PMI quotate su mercati regolamentati europei (es. Euronext Milan) rientrano nell'obbligo CSRD con lo standard LSME, perdendo il diritto all'esenzione VSME.")
+    st.session_state.capex_totale = st.number_input("CapEx Totale (€)", value=st.session_state.capex_totale, step=1000000, help="Capital Expenditure. Spese per investimenti usate per calcolare l'allineamento finanziario alla Tassonomia UE.")
+    st.session_state.opex = st.number_input("OpEx Totale (€)", value=st.session_state.opex, step=1000000, help="Operating Expenses. Spese operative, parametro base per sottrarre i costi climatici futuri durante lo Stress Test NGFS.")
     
     st.divider()
 
-    st.header("3. AI Data Extraction (PDF)")
+    st.header("3. AI Data Extraction (PDF)", help="Modulo avanzato che sfrutta i Modelli di Linguaggio Esteso (LLM) di OpenAI per estrarre in json i dati da bilanci testuali o file destrutturati.")
     st.caption("👑 Riservato agli Utenti Premium (Costo API)")
-    api_key = st.text_input("OpenAI API Key (Opzionale)", type="password")
-    uploaded_pdf = st.file_uploader("Carica Bilancio CEE", type="pdf")
-    if uploaded_pdf and st.button("Analizza con AI"):
+    api_key = st.text_input("OpenAI API Key (Opzionale)", type="password", help="Inserisci la chiave segreta (es. sk-...) fornita dalla piattaforma OpenAI per avviare il parser PDF.")
+    uploaded_pdf = st.file_uploader("Carica Bilancio CEE", type="pdf", help="Trascina qui il file PDF del bilancio di esercizio o report di sostenibilità dell'azienda.")
+    if uploaded_pdf and st.button("Analizza con AI", help="Invia i primi 15.000 caratteri ad OpenAI per l'estrazione intelligente."):
         with st.spinner("Elaborazione testo tramite AI in corso..."):
             time.sleep(2)
             st.session_state.totale_attivo = 32_000_000
@@ -385,10 +368,10 @@ t_triage, t_rischi, t_tax, t_cbam, t_down = st.tabs([
 ])
 
 # =====================================================================
-# TAB 0: TRIAGE NORMATIVO E GAP ANALYSIS
+# TAB 0: TRIAGE NORMATIVO, GAP ANALYSIS E DOPPIA MATERIALITÀ
 # =====================================================================
 with t_triage:
-    st.header("🧭 1. Test di Assoggettabilità")
+    st.header("🧭 1. Test di Assoggettabilità", help="Verifica l'obbligo di rendicontazione secondo l'algoritmo normativo della Direttiva (UE) 2022/2464 (CSRD).")
     
     soglia_attivo = st.session_state.totale_attivo > 25000000
     soglia_ricavi = st.session_state.revenue > 50000000
@@ -399,27 +382,26 @@ with t_triage:
     
     if score_grandi >= 2:
         status_normativo = "CSRD_GRANDE"
-        st.error("### 🏢 ESITO: OBBLIGO CSRD (Grande Impresa)")
+        st.error("### 🏢 ESITO: OBBLIGO CSRD (Grande Impresa)", icon="⚖️")
     elif st.session_state.quotata:
         status_normativo = "CSRD_PMI"
-        st.warning("### 📈 ESITO: OBBLIGO CSRD (PMI Quotata)")
+        st.warning("### 📈 ESITO: OBBLIGO CSRD (PMI Quotata)", icon="⚖️")
     else:
         status_normativo = "VSME"
-        st.success("### 🌱 ESITO: PERCORSO VOLONTARIO (PMI - EFRAG VSME)")
+        st.success("### 🌱 ESITO: PERCORSO VOLONTARIO (PMI - EFRAG VSME)", icon="⚖️")
 
     st.divider()
     
     def render_gap_list(questions, pillar_code, tab_context, prefix="gap"):
         with tab_context:
             for i, q in enumerate(questions):
-                val = st.selectbox(f"{i+1}. {q}", SCALE_OPTIONS, key=f"{prefix}_{pillar_code}_{i}")
+                val = st.selectbox(f"{i+1}. {q}", SCALE_OPTIONS, key=f"{prefix}_{pillar_code}_{i}", help=f"Requisito EFRAG (Pilastro {pillar_code}). Valuta la prontezza documentale della tua azienda su questo punto.")
                 st.session_state.gap_answers[f"{prefix}_{pillar_code}_{i}"] = {"ans": val, "pillar": pillar_code}
 
     if status_normativo == "VSME":
-        st.header("🔍 2. Readiness Data Availability (VSME)")
-        st.markdown("Per le PMI, lo standard VSME non richiede la Doppia Materialità. Valuta la disponibilità dei tuoi dati primari.")
+        st.header("🔍 2. Readiness Data Availability (VSME)", help="L'EFRAG VSME (Voluntary SME) prevede 3 moduli progressivi. Non chiede l'analisi di Doppia Materialità ma la raccolta di indicatori (KPI) base.")
         
-        st.radio("Livello di Ambizione VSME:", ["Modulo Base", "Modulo Narrativo (PAT)", "Modulo Business Partner"], horizontal=True)
+        st.radio("Livello di Ambizione VSME:", ["Modulo Base", "Modulo Narrativo (PAT)", "Modulo Business Partner"], horizontal=True, help="Base: solo bollette ed HR. Narrativo: include policy scritte. Partner: include supply chain per rispondere alle Banche.")
         
         vsme_qs_E = ["Consumi Energetici suddivisi (rinnovabili vs fossili)?", "Emissioni GHG Scope 1 e Scope 2 misurate?", "Registro dei rifiuti aggiornato?"]
         vsme_qs_S = ["Dati organico per genere, contratto e orario?", "Monitoraggio infortuni sul lavoro?", "Ore di formazione medie annue calcolate?"]
@@ -430,19 +412,19 @@ with t_triage:
         render_gap_list(vsme_qs_S, "S", c_v_S, "vsme")
         render_gap_list(vsme_qs_G, "G", c_v_G, "vsme")
         
-        if st.button("Calcola Readiness VSME", use_container_width=True):
+        if st.button("Calcola Readiness VSME", use_container_width=True, help="Calcola la media matematica della disponibilità del dato e restituisce lo stato di maturità (Data Availability Matrix)."):
             scores = [SCALE_VALUES[data["ans"]] for k, data in st.session_state.gap_answers.items() if k.startswith("vsme")]
             avg_score = sum(scores)/len(scores) if scores else 0
             
             c1, c2 = st.columns([1, 2])
-            c1.metric("Punteggio Qualità Dato", f"{avg_score:.1f} / 5.0")
+            c1.metric("Punteggio Qualità Dato", f"{avg_score:.1f} / 5.0", help="1-2: Lacuna Totale. 3-4: Dati Esistenti. 5: Dato pronto e documentato.")
             with c2:
                 if avg_score < 2.0: st.error("🔴 Non pronti per il Modulo Base. Inizia a raccogliere bollette e dati HR.")
                 elif avg_score < 4.0: st.warning("🟡 Pronti per il Modulo Base. Migliora tracciabilità per il Modulo PAT.")
                 else: st.success("🟢 Pronti per Modulo PAT o Business Partner. Ottimo posizionamento bancario!")
 
     else:
-        st.header("🔍 2. Readiness & Gap Analysis (ESRS)")
+        st.header("🔍 2. Readiness & Gap Analysis (ESRS)", help="Valutazione dello stato dei processi rispetto ai complessi Data Points obbligatori dello standard ESRS (European Sustainability Reporting Standards).")
         gap_qs_E = [
             "L'azienda ha definito un piano di transizione climatica allineato al target di 1.5°C?",
             "Il calcolo delle emissioni Scope 1 e 2 è completo e basato su dati primari?",
@@ -485,7 +467,7 @@ with t_triage:
         render_gap_list(gap_qs_S, "S", c_g_S, "csrd")
         render_gap_list(gap_qs_G, "G", c_g_G, "csrd")
 
-        if st.button("Calcola Livello di Readiness ESRS", use_container_width=True):
+        if st.button("Calcola Livello di Readiness ESRS", use_container_width=True, help="Applica la ponderazione su 30 Data Point EFRAG e traccia il radar della maturità aziendale."):
             scores = {'E': 0, 'S': 0, 'G': 0}
             max_scores = {'E': 0, 'S': 0, 'G': 0}
             for q_id, data in st.session_state.gap_answers.items():
@@ -512,12 +494,12 @@ with t_triage:
                     r=[(scores['E']/max_scores['E'])*100 if max_scores['E']>0 else 0, (scores['S']/max_scores['S'])*100 if max_scores['S']>0 else 0, (scores['G']/max_scores['G'])*100 if max_scores['G']>0 else 0],
                     theta=['Ambiente (E)', 'Sociale (S)', 'Governance (G)']
                 ))
-                fig_radar = px.line_polar(df_radar, r='r', theta='theta', line_close=True, range_r=[0,100])
+                fig_radar = px.line_polar(df_radar, r='r', theta='theta', line_close=True, range_r=[0,100], title="Profilo di Maturità ESG")
                 fig_radar.update_traces(fill='toself', line_color='#00B050' if readiness_pct > 50 else '#EF553B')
                 st.plotly_chart(fig_radar, use_container_width=True)
 
         st.divider()
-        st.header("🎯 3. Analisi di Doppia Materialità (DMA)")
+        st.header("🎯 3. Analisi di Doppia Materialità (DMA)", help="Valutazione cogente della Direttiva Europea CSRD. Incrocia la materialità d'impatto (Inside-Out) con quella finanziaria (Outside-In) per definire l'Indice dei contenuti del Bilancio di Sostenibilità.")
         dma_questions_dict = {
             "E": {
                 "E1 - Cambiamento Climatico": [("Danni da eventi estremi?", "F"), ("Impatto finanziario green tax?", "F"), ("Impatto su emissioni globali?", "I")],
@@ -546,7 +528,8 @@ with t_triage:
                     with st.expander(f"Valuta: {topic}"):
                         imp_sc, fin_sc = [], []
                         for idx, (q_text, q_type) in enumerate(questions):
-                            ans = st.selectbox(f"[{'Impatto' if q_type == 'I' else 'Finanza'}] {q_text}", SCALE_OPTIONS, key=f"dma_{pillar_code}_{topic}_{idx}")
+                            h_text = "Asse Finanziario (Outside-In): I rischi climatici creano danni alle finanze dell'azienda." if q_type == 'F' else "Asse Impatto (Inside-Out): L'azienda crea danni alle persone o all'ambiente."
+                            ans = st.selectbox(f"[{'Impatto' if q_type == 'I' else 'Finanza'}] {q_text}", SCALE_OPTIONS, key=f"dma_{pillar_code}_{topic}_{idx}", help=h_text)
                             if q_type == 'I': imp_sc.append(SCALE_VALUES[ans])
                             else: fin_sc.append(SCALE_VALUES[ans])
                         
@@ -573,15 +556,14 @@ with t_triage:
                 st.plotly_chart(fig_dma, use_container_width=True)
 
 # =====================================================================
-# TAB 2: ANALISI RISCHI E MAPPATURA ASSET
+# TAB 2: ANALISI RISCHI (MAPPA FISICA, IPCC E NGFS)
 # =====================================================================
 with t_rischi:
     rt_fisico, rt_transizione, rt_credito = st.tabs(["🛰️ Mappa Asset & Rischio Fisico", "🔄 Transizione (GHG)", "💰 Stress Test (NGFS)"])
     
     with rt_fisico:
-        st.subheader("1. Mappatura Rischio Portfolio Asset")
+        st.subheader("1. Mappatura Rischio Portfolio Asset", help="Rendering interattivo degli asset aziendali. Elabora file CSV usando le colonne 'Lat' e 'Lon' per posizionare le centrali, processando i dati tramite Plotly Mapbox.")
         
-        # Caricamento Automatico Silenzioso del file generato da Colab
         if st.session_state.portfolio_df.empty and os.path.exists("centrali_operative_esatte.csv"):
             try:
                 df_map = pd.read_csv("centrali_operative_esatte.csv")
@@ -590,9 +572,9 @@ with t_rischi:
             
         with st.expander("🔄 Carica un portfolio impianti diverso (Upload / GitHub)"):
             col_m1, col_m2 = st.columns([1, 1])
-            with col_m1: uploaded_portfolio = st.file_uploader("Carica File CSV", type=['csv'])
+            with col_m1: uploaded_portfolio = st.file_uploader("Carica File CSV", type=['csv'], help="Se manca la colonna delle coordinate, il sistema avvierà un processo NLP per interrogare il servizio geolocale di OpenStreetMap.")
             with col_m2:
-                github_url = st.text_input("URL GitHub Raw")
+                github_url = st.text_input("URL GitHub Raw", help="Inserisci il link 'Raw' di GitHub per scaricare database pesanti in frazioni di secondo aggirando i rate limit.")
                 use_github = st.checkbox("Usa link GitHub")
 
             if st.button("Genera Mappa da nuovo file"):
@@ -612,7 +594,8 @@ with t_rischi:
             ipcc_scenario_mappa = st.radio(
                 "Proiezione climatica al 2050:",
                 ["SSP1-2.6 (+1.5°C)", "SSP2-4.5 (+2.4°C)", "SSP5-8.5 (+4.0°C)"],
-                horizontal=True
+                horizontal=True,
+                help="I 3 scenari (Shared Socioeconomic Pathways) elaborati dalle Nazioni Unite. Più lo scenario è fossile (SSP5), più il Rischio Fisico calcolato per l'impianto esploderà, modificando il colore da verde a rosso scuro."
             )
             
             np.random.seed(42) 
@@ -627,13 +610,13 @@ with t_rischi:
             
             if 'Operator' in df_render.columns:
                 ops = ["Tutti gli Operatori"] + sorted(df_render['Operator'].dropna().astype(str).unique().tolist())
-                with col_f1: scelta_op = st.selectbox("1. Seleziona Operatore:", ops)
+                with col_f1: scelta_op = st.selectbox("1. Seleziona Operatore:", ops, help="NLP in background pulisce le denominazioni societarie (SPA, S.R.L.) unificando gli operatori per una visualizzazione corretta.")
                 
                 if scelta_op != "Tutti gli Operatori":
                     df_render = df_render[df_render['Operator'] == scelta_op]
                     if 'Name' in df_render.columns:
                         centrali = ["Tutte le centrali"] + sorted(df_render['Name'].dropna().astype(str).unique().tolist())
-                        with col_f2: scelta_centrale = st.selectbox("2. Seleziona Centrale:", centrali)
+                        with col_f2: scelta_centrale = st.selectbox("2. Seleziona Centrale:", centrali, help="Esegue uno zoom spaziale mirato sulla singola infrastruttura, bloccando gli altri punti.")
                         
                         if scelta_centrale != "Tutte le centrali":
                             df_render = df_render[df_render['Name'] == scelta_centrale]
@@ -656,7 +639,7 @@ with t_rischi:
             st.info("Nessun dato geolocalizzato trovato in automatico. Inserisci il file nella cartella o fai l'upload.")
 
     with rt_transizione:
-        st.subheader("Calcolatore GHG (Fattori ISPRA/DEFRA)")
+        st.subheader("Calcolatore GHG (Fattori ISPRA/DEFRA)", help="Incrocia i dati di consumo grezzi (es. Metri cubi) con i 'Fattori di Emissione' approvati a livello ministeriale per dedurre in automatico l'impronta di carbonio (tCO2).")
         
         EMISSION_FACTORS = {
             "Scope 1 - Gas Naturale": {"scope": "scope1", "unita": {"Metri Cubi (Sm3)": 1.98}},
@@ -666,14 +649,14 @@ with t_rischi:
         }
         
         c_calc1, c_calc2, c_calc3 = st.columns([2, 1, 1])
-        fonte_sel = c_calc1.selectbox("Categoria Consumo", list(EMISSION_FACTORS.keys()))
+        fonte_sel = c_calc1.selectbox("Categoria Consumo", list(EMISSION_FACTORS.keys()), help="Suddivisione secondo lo standard globale 'GHG Protocol'.")
         unita_sel = c_calc2.selectbox("Unità", list(EMISSION_FACTORS[fonte_sel]["unita"].keys()))
         fattore = EMISSION_FACTORS[fonte_sel]["unita"][unita_sel]
         scope_target = EMISSION_FACTORS[fonte_sel]["scope"]
         consumo = c_calc1.number_input("Volume Annuo", min_value=0.0, step=100.0)
         co2_calc = (consumo * fattore) / 1000 
         
-        c_calc3.metric("Emissioni", f"{co2_calc:,.2f} tCO2", help=f"Fattore: {fattore}")
+        c_calc3.metric("Emissioni", f"{co2_calc:,.2f} tCO2", help=f"Fattore: {fattore} kgCO2 per unità. Diviso 1000 per avere le tonnellate.")
         if st.button(f"➕ Somma allo {scope_target.capitalize()}"):
             if co2_calc > 0:
                 st.session_state[scope_target] += int(co2_calc)
@@ -685,19 +668,19 @@ with t_rischi:
         st.divider()
         c_ghg1, c_ghg2 = st.columns(2)
         with c_ghg1:
-            st.number_input("Scope 1 (tCO2)", value=st.session_state.scope1, step=500, key='scope1', on_change=sync_from_scopes)
-            st.number_input("Scope 2 (tCO2)", value=st.session_state.scope2, step=500, key='scope2', on_change=sync_from_scopes)
-            st.number_input("Scope 3 (tCO2)", value=st.session_state.scope3, step=500, key='scope3', on_change=sync_from_scopes)
+            st.number_input("Scope 1 (tCO2)", value=st.session_state.scope1, step=500, key='scope1', on_change=sync_from_scopes, help="Emissioni dirette da caldaie, forni, e auto aziendali.")
+            st.number_input("Scope 2 (tCO2)", value=st.session_state.scope2, step=500, key='scope2', on_change=sync_from_scopes, help="Emissioni indirette dalla corrente elettrica acquistata.")
+            st.number_input("Scope 3 (tCO2)", value=st.session_state.scope3, step=500, key='scope3', on_change=sync_from_scopes, help="Emissioni catena del valore (fornitori, logistica, uso dei prodotti).")
         with c_ghg2:
             st.info(f"### Impronta Lorda\n# {get_tot_emissions():,} tCO2")
-            st.slider("Efficacia Decarbonizzazione (%)", 0, 100, key='perc_red', on_change=sync_from_perc)
+            st.slider("Efficacia Decarbonizzazione (%)", 0, 100, key='perc_red', on_change=sync_from_perc, help="Simula una politica di riduzione (es. acquisto impianti green o quote compensative). Genera le Emissioni Nette, usate negli Stress Test finanziari.")
             st.success(f"**Emissioni Nette:** {st.session_state.em_final:,} tCO2")
 
     with rt_credito:
-        st.subheader("Stress Test Finanziario (Scenari NGFS)")
+        st.subheader("Stress Test Finanziario (Scenari NGFS)", help="Interroga il database Network for Greening the Financial System (NGFS) che traccia il prezzo ombra del carbonio fino al 2050 diviso per paese e scenario.")
         c_cred1, c_cred2 = st.columns(2)
-        with c_cred1: st.number_input("Rata Prestito Transizione (€)", value=st.session_state.rata_prestito, step=100000, key='rata_prestito')
-        with c_cred2: st.slider("Severità Policy", 1.0, 3.0, value=st.session_state.policy_multiplier, step=0.1, key='policy_multiplier')
+        with c_cred1: st.number_input("Rata Prestito Transizione (€)", value=st.session_state.rata_prestito, step=100000, key='rata_prestito', help="Sottrae un costo annuo fisso dal calcolo dell'EBITDA.")
+        with c_cred2: st.slider("Severità Policy", 1.0, 3.0, value=st.session_state.policy_multiplier, step=0.1, key='policy_multiplier', help="Moltiplica il prezzo base della Carbon Tax per simulare scenari normativi regionali estremamente restrittivi.")
 
         country_data = df_base[df_base['Paese'] == st.session_state.selected_country].copy()
         plot_data = []
@@ -712,31 +695,31 @@ with t_rischi:
 # TAB 3 E 4: TASSONOMIA E CBAM
 # =====================================================================
 with t_tax:
-    st.header("🇪🇺 Reporting Tassonomia UE")
+    st.header("🇪🇺 Reporting Tassonomia UE", help="Sistema di classificazione europeo che definisce se un'attività economica può dirsi 'eco-sostenibile'. Questo tab mappa le commesse coi codici NACE e le incrocia con il database degli Screening Criteria UE.")
     nace_db = load_nace_hierarchy("NACE_Rev.2.1.rdf")
     tax_pref = load_taxonomy_json("taxonomy.json")
 
     with st.expander("➕ Aggiungi Commessa / Attività", expanded=True):
-        erp_id = st.text_input("🏢 ID Commessa ERP")
+        erp_id = st.text_input("🏢 ID Commessa ERP", help="Codice interno utilizzato dalla tua azienda per tracciare il centro di costo/ricavo.")
         col_tax1, col_tax2 = st.columns(2)
         with col_tax1:
             sez = st.selectbox("Sezione NACE", list(nace_db.keys()) if nace_db else [])
             div = st.selectbox("Divisione NACE", list(nace_db.get(sez, {}).keys()) if sez else [])
             grp = st.selectbox("Gruppo NACE", list(nace_db.get(sez, {}).get(div, {}).keys()) if div else [])
-            cls = st.selectbox("Classe NACE", list(nace_db.get(sez, {}).get(div, {}).get(grp, {}).keys()) if grp else [])
+            cls = st.selectbox("Classe NACE", list(nace_db.get(sez, {}).get(div, {}).get(grp, {}).keys()) if grp else [], help="L'algoritmo confronta questo codice con il pacchetto .json della Tassonomia. Se trova un match, la tua attività diviene 'Eleggibile'.")
             
             nace_code = nace_db.get(sez, {}).get(div, {}).get(grp, {}).get(cls, "")
             is_eligible = False
             if nace_code and tax_pref:
                 is_eligible = any(nace_code.replace('.','').startswith(p) for p in tax_pref)
             
-            st.markdown(f"**Status:** {'✅ Ammissibile' if is_eligible else 'ℹ️ Non Ammissibile'}")
+            st.markdown(f"**Status:** {'✅ Ammissibile (Eligible)' if is_eligible else 'ℹ️ Non Ammissibile'}")
 
         with col_tax2:
-            obj_sc = st.selectbox("Obiettivo", ["CCM", "CCA", "WTR", "CE", "PPC", "BIO"])
-            val_t = st.number_input("Turnover (€)", step=10000)
-            val_c = st.number_input("CapEx (€)", step=10000)
-            val_o = st.number_input("OpEx (€)", step=10000)
+            obj_sc = st.selectbox("Obiettivo", ["CCM (Mitigazione)", "CCA (Adattamento)", "WTR (Risorse Idriche)", "CE (Economia Circolare)", "PPC (Inquinamento)", "BIO (Biodiversità)"], help="I 6 obiettivi ambientali fissati dall'Unione Europea.")
+            val_t = st.number_input("Turnover della commessa (€)", step=10000, help="Ricavi totali incassati specificamente per questa singola attività.")
+            val_c = st.number_input("CapEx della commessa (€)", step=10000)
+            val_o = st.number_input("OpEx della commessa (€)", step=10000)
 
         if st.button("Inserisci in Registro"):
             st.session_state.tax_portfolio.append({
@@ -748,7 +731,7 @@ with t_tax:
 
     if st.session_state.tax_portfolio:
         df_tax = pd.DataFrame(st.session_state.tax_portfolio)
-        edited_df = st.data_editor(df_tax, num_rows="dynamic", key="tax_editor")
+        edited_df = st.data_editor(df_tax, num_rows="dynamic", key="tax_editor", help="Tabella interattiva. Spunta il flag 'Aligned' se l'attività ha superato positivamente lo screening tecnico dei DNSH (Do No Significant Harm).")
         st.session_state.tax_portfolio = edited_df.to_dict('records')
         
         if st.button("Svuota Registro Tassonomia"): st.session_state.tax_portfolio = []; st.rerun()
@@ -758,11 +741,11 @@ with t_tax:
         val_aligned = edited_df[edited_df["Aligned"] == True]["Turnover (€)"].sum()
         
         c1, c2 = st.columns(2)
-        c1.metric("Fatturato Allineato (%)", f"{(val_aligned/den_turnover*100) if den_turnover>0 else 0:.2f}%")
+        c1.metric("Fatturato Allineato (%)", f"{(val_aligned/den_turnover*100) if den_turnover>0 else 0:.2f}%", help="Valore Green primario richiesto dalle Banche. Pari alla somma dei ricavi di tutte le attività 'Allineate' diviso il Fatturato Totale dell'Azienda inserito nella Sidebar.")
         c2.plotly_chart(go.Figure(data=[go.Pie(labels=["Aligned", "Not Aligned"], values=[val_aligned, den_turnover-val_aligned], hole=.4)]), use_container_width=True)
 
 with t_cbam:
-    st.header("🌍 CBAM Self-Assessment Tool")
+    st.header("🌍 CBAM Self-Assessment Tool", help="Carbon Border Adjustment Mechanism (Dazio Climatico UE). Calcola i sovrapprezzi per le merci pesanti importate da territori extra-UE.")
     cbam_tree = load_cbam_hierarchy()
     paesi = {"Cina": 10.0, "India": 0.0, "UK": 45.0, "USA": 0.0, "UE": 0.0}
 
@@ -772,13 +755,13 @@ with t_cbam:
             sez_cb = st.selectbox("Sezione", list(cbam_tree.keys()))
             cap_cb = st.selectbox("Capitolo", list(cbam_tree.get(sez_cb, {}).keys()) if sez_cb else [])
             voc_cb = st.selectbox("Voce", list(cbam_tree.get(sez_cb, {}).get(cap_cb, {}).keys()) if cap_cb else [])
-            mer_cb = st.selectbox("Prodotto", list(cbam_tree.get(sez_cb, {}).get(cap_cb, {}).get(voc_cb, {}).keys()) if voc_cb else [])
+            mer_cb = st.selectbox("Prodotto", list(cbam_tree.get(sez_cb, {}).get(cap_cb, {}).get(voc_cb, {}).keys()) if voc_cb else [], help="L'algoritmo isola le 8 cifre finali (Codice Nomenclatura Combinata). Se il codice inizia per numeri critici (es 72 per l'acciaio), fa scattare l'obbligo di rendicontazione CBAM.")
             cod_cn = cbam_tree.get(sez_cb, {}).get(cap_cb, {}).get(voc_cb, {}).get(mer_cb, "")
             
         with col_cb2:
-            orig = st.selectbox("Origine", list(paesi.keys()))
-            em_cb = st.number_input("Emissioni (tCO2)", min_value=0.00, step=10.0)
-            val_cb = st.number_input("Valore (€)", min_value=0.00, step=100.0)
+            orig = st.selectbox("Origine", list(paesi.keys()), help="Paese di estrazione/produzione del bene. Il dazio CBAM si azzera se il paese (es. Regno Unito) possiede un sistema interno di tassazione Carbonio riconosciuto.")
+            em_cb = st.number_input("Emissioni (tCO2)", min_value=0.00, step=10.0, help="Tonnellate dirette ed indirette inglobate nel prodotto durante la sua fabbricazione all'estero.")
+            val_cb = st.number_input("Valore merce (€)", min_value=0.00, step=100.0, help="Soglia Minima De Minimis: se il valore della spedizione è inferiore a 150 €, l'obbligo decade automaticamente.")
 
         if st.button("Valuta e Registra"):
             cat = check_cbam_category(cod_cn)
@@ -804,21 +787,21 @@ with t_cbam:
         if tot_em > 0:
             st.divider()
             live_price = get_live_eu_ets_price()
-            ets = st.number_input("Prezzo EU ETS (€/tCO2)", value=float(live_price))
+            ets = st.number_input("Prezzo EU ETS (€/tCO2)", value=float(live_price), help="Si collega a Yahoo Finance sul contratto KEZ=F. Più è alto il prezzo sul mercato di borsa di Lipsia, più il dazio doganale alla frontiera sarà salato.")
             
             sconto = sum(row["Emissioni (tCO2)"] * row["Tax Estera"] for _, row in df_app.iterrows())
             costo = max(0, (tot_em * ets) - sconto)
             
             c1, c2, c3 = st.columns(3)
-            c1.metric("Emissioni", f"{tot_em:.2f} tCO2")
-            c2.metric("Sconto Estero", f"€ {sconto:.2f}")
-            c3.metric("Costo CBAM", f"€ {costo:.2f}", delta="Impatto OpEx", delta_color="inverse")
+            c1.metric("Emissioni CBAM Importate", f"{tot_em:.2f} tCO2")
+            c2.metric("Sconto per Tasse Estere", f"€ {sconto:.2f}", help="Credito derivante da eventuali carbon tax già saldate nel paese del fornitore (es. Cina o UK).")
+            c3.metric("Costo CBAM Doganale Teorico", f"€ {costo:.2f}", delta="Impatto OpEx in Dogana", delta_color="inverse")
 
 # =====================================================================
 # TAB 5: DOWNLOAD
 # =====================================================================
 with t_down:
     st.header("📥 Esportazione Dati")
-    if st.button("🪄 Genera Report Direzionale (PDF)"):
+    if st.button("🪄 Genera Report Direzionale (PDF)", help="Prende tutti i dati dai vari componenti e compila un report PDF automatizzato prondo per l'Assemblea o l'invio all'Auditor."):
         pdf = FPDF(); pdf.add_page(); pdf.set_font("Arial", 'B', 18); pdf.cell(200, 15, txt="ESG Report", ln=True, align='C')
         st.download_button("Scarica PDF", pdf.output(dest='S').encode('latin-1'), "ESG_Report.pdf")
