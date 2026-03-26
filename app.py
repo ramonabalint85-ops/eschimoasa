@@ -15,6 +15,7 @@ import re
 import requests
 from datetime import datetime, timedelta
 from functools import lru_cache
+import shutil
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="CarbonRisk AI Enterprise", layout="wide")
@@ -144,6 +145,7 @@ st.session_state.setdefault('revenue', 0)
 st.session_state.setdefault('opex', 0)
 st.session_state.setdefault('totale_attivo', 0)
 st.session_state.setdefault('dipendenti', 0)
+st.session_state.setdefault('company_name', '')
 st.session_state.setdefault('quotata', False)
 st.session_state.setdefault('sector', 'Industrials')
 st.session_state.setdefault('industry', 'Machinery')
@@ -389,60 +391,83 @@ with st.sidebar:
     st.title("⚙️ Dati Baseline Aziendali", help="Pannello di controllo per l'inserimento dei dati macroeconomici. I dati qui inseriti influenzano l'algoritmo di Triage, gli stress test finanziari e la reportistica finale.")
     
     st.header("1. Sincronizzazione API (YFinance)", help="Modulo di automazione collegato ai server di mercato Yahoo Finance. Estrae in tempo reale le info di bilancio, settore e localizzazione evitando l'inserimento manuale.")
-    ticker = st.text_input("Ticker Aziendale (es. ENEL.MI)", help="Inserisci il codice di quotazione borsa. L'algoritmo navigherà il bilancio (Income Statement e Cash Flow) per trovare Ricavi, Dipendenti, OpEx e CapEx.")
     
-    if st.button("Estrai Dati da Yahoo Finance", help="Richiama l'API yfinance."):
-        with st.spinner("Scaricando dati dal mercato..."):
-            if not ticker: 
-                st.warning("⚠️ Inserisci un Ticker valido.")
-            else:
-                try:
-                    stock = yf.Ticker(ticker)
-                    info = stock.info; fins = stock.financials; cf = stock.cash_flow
-                    new_rev, new_assets, new_emps = None, None, None
-                    new_opex, new_capex = None, None
-                    new_sec, new_ind, new_country = "", "", ""
-                    
-                    if info:
-                        new_rev = info.get('totalRevenue'); new_assets = info.get('totalAssets')
-                        new_emps = info.get('fullTimeEmployees'); new_sec = info.get('sector', '')
-                        new_ind = info.get('industry', ''); new_country = info.get('country', '')
+    def extract_ticker_data():
+        """Estrae dati aziendali da yfinance quando l'utente preme Invio nel campo ticker."""
+        ticker = st.session_state.get('ticker_input', '').strip().upper()
+        if not ticker:
+            return
+        
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info; fins = stock.financials; cf = stock.cash_flow
+            new_rev, new_assets, new_emps = None, None, None
+            new_opex, new_capex = None, None
+            new_sec, new_ind, new_country = "", "", ""
+            new_company_name = ""
+            
+            if info:
+                new_rev = info.get('totalRevenue'); new_assets = info.get('totalAssets')
+                new_emps = info.get('fullTimeEmployees'); new_sec = info.get('sector', '')
+                new_ind = info.get('industry', ''); new_country = info.get('country', '')
+                new_company_name = info.get('longName', '')
 
-                    if not fins.empty:
-                        if not new_rev:
-                            rev_keys = [k for k in fins.index if 'revenue' in str(k).lower()]
-                            if rev_keys: new_rev = fins.loc[rev_keys[0]].dropna().iloc[0]
-                        opex_keys = [k for k in fins.index if 'operating' in str(k).lower() and 'expense' in str(k).lower()]
-                        if opex_keys: new_opex = fins.loc[opex_keys[0]].dropna().iloc[0]
-                        else:
-                            op_inc_keys = [k for k in fins.index if 'operating income' in str(k).lower()]
-                            if new_rev and op_inc_keys: new_opex = new_rev - fins.loc[op_inc_keys[0]].dropna().iloc[0]
+            if not fins.empty:
+                if not new_rev:
+                    rev_keys = [k for k in fins.index if 'revenue' in str(k).lower()]
+                    if rev_keys: new_rev = fins.loc[rev_keys[0]].dropna().iloc[0]
+                opex_keys = [k for k in fins.index if 'operating' in str(k).lower() and 'expense' in str(k).lower()]
+                if opex_keys: new_opex = fins.loc[opex_keys[0]].dropna().iloc[0]
+                else:
+                    op_inc_keys = [k for k in fins.index if 'operating income' in str(k).lower()]
+                    if new_rev and op_inc_keys: new_opex = new_rev - fins.loc[op_inc_keys[0]].dropna().iloc[0]
 
-                    if not cf.empty:
-                        capex_keys = [k for k in cf.index if 'capital' in str(k).lower() and 'expenditure' in str(k).lower()]
-                        if not capex_keys: capex_keys = [k for k in cf.index if 'property' in str(k).lower() and 'plant' in str(k).lower()]
-                        if capex_keys: new_capex = abs(cf.loc[capex_keys[0]].dropna().iloc[0])
-                    
-                    if new_rev:
-                        st.session_state.revenue = int(new_rev); st.session_state.totale_attivo = int(new_assets) if new_assets else int(new_rev * 1.5)
-                        st.session_state.dipendenti = int(new_emps) if new_emps else max(50, int(new_rev / 500000))
-                        if new_opex and not pd.isna(new_opex): st.session_state.opex = int(new_opex)
-                        if new_capex and not pd.isna(new_capex): st.session_state.capex_totale = int(new_capex)
-                        st.session_state.quotata = True
-                        if new_sec:
-                            if new_sec not in st.session_state.gics_sectors: st.session_state.gics_sectors[new_sec] = []
-                            if new_ind and new_ind not in st.session_state.gics_sectors[new_sec]: st.session_state.gics_sectors[new_sec].append(new_ind)
-                            st.session_state.sector = new_sec; st.session_state.industry = new_ind
-                        if new_country:
-                            cmap = {'Italy': 'Italia', 'United States': 'Stati Uniti', 'China': 'Cina', 'Germany': 'Germania', 'India': 'India'}
-                            if new_country in cmap: st.session_state.selected_country = cmap[new_country]
-                        st.success(f"✅ Dati estratti per {ticker.upper()}!")
-                        time.sleep(1.5); st.rerun()
-                    else: st.warning("⚠️ Nessun dato trovato.")
-                except: st.error("❌ Connessione bloccata.")
+            if not cf.empty:
+                capex_keys = [k for k in cf.index if 'capital' in str(k).lower() and 'expenditure' in str(k).lower()]
+                if not capex_keys: capex_keys = [k for k in cf.index if 'property' in str(k).lower() and 'plant' in str(k).lower()]
+                if capex_keys: new_capex = abs(cf.loc[capex_keys[0]].dropna().iloc[0])
+            
+            if new_rev:
+                st.session_state.revenue = int(new_rev); st.session_state.totale_attivo = int(new_assets) if new_assets else int(new_rev * 1.5)
+                st.session_state.dipendenti = int(new_emps) if new_emps else max(50, int(new_rev / 500000))
+                if new_opex and not pd.isna(new_opex): st.session_state.opex = int(new_opex)
+                if new_capex and not pd.isna(new_capex): st.session_state.capex_totale = int(new_capex)
+                st.session_state.quotata = True
+                if new_company_name: st.session_state.company_name = new_company_name
+                if new_sec:
+                    if new_sec not in st.session_state.gics_sectors: st.session_state.gics_sectors[new_sec] = []
+                    if new_ind and new_ind not in st.session_state.gics_sectors[new_sec]: st.session_state.gics_sectors[new_sec].append(new_ind)
+                    st.session_state.sector = new_sec; st.session_state.industry = new_ind
+                if new_country:
+                    cmap = {'Italy': 'Italia', 'United States': 'Stati Uniti', 'China': 'Cina', 'Germany': 'Germania', 'India': 'India'}
+                    if new_country in cmap: st.session_state.selected_country = cmap[new_country]
+                st.success(f"✅ Dati estratti per {ticker}!")
+                time.sleep(1.0)
+        except Exception as e: 
+            st.warning("⚠️ Connessione a yfinance non disponibile. Nessun problema! Usa la sezione 'Inserimento Manuale' oppure verifica di avere inserito il ticker corretto.")
+    
+    ticker = st.text_input("Ticker Aziendale (es. ENEL.MI)", help="Inserisci il codice di quotazione borsa e premi Invio. L'algoritmo navigherà il bilancio (Income Statement e Cash Flow) per trovare Ricavi, Dipendenti, OpEx e CapEx.", key="ticker_input", on_change=extract_ticker_data)
+    
+    if st.button("Estrai Dati da Yahoo Finance", help="Bottone alternativo: richiama manualmente l'API yfinance se non vuoi usare Invio."):
+        extract_ticker_data()
+
+    if st.button("🗑️ Svuota Cache", help="Cancella tutti i dati memorizzati localmente per forzare il download fresco da yfinance"):
+        try:
+            if os.path.exists(CACHE_DIR):
+                shutil.rmtree(CACHE_DIR)
+                os.makedirs(CACHE_DIR, exist_ok=True)
+            st.success("✅ Cache svuotata!")
+            time.sleep(1)
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ Errore: {e}")
 
     st.divider()
-    st.header("2. Inserimento Manuale", help="Opzione per inserire o sovrascrivere manualmente i dati estratti.")
+    
+    st.header("2. Inserimento Manuale", help="Opzione per inserire o sovrascrivere manualmente i dati estratti. Puoi usare questa sezione indipendentemente dall'API.")
+    
+    st.session_state.company_name = st.text_input("Nome Azienda (es. Tesla, Apple, Enel)", value=st.session_state.get('company_name', ''), help="Nome commerciale o ragione sociale della società. Usato nei report di sintesi per identificare l'azienda analizzata.")
+    
     st.selectbox("Paese Sede Legale", df_base['Paese'].unique(), index=list(df_base['Paese'].unique()).index(st.session_state.selected_country) if st.session_state.selected_country in df_base['Paese'].unique() else 3, key='selected_country', help="Indispensabile per applicare il corretto prezzo del carbonio (Carbon Pricing) negli stress test del Database NGFS.") 
     
     curr_sec_idx = list(st.session_state.gics_sectors.keys()).index(st.session_state.sector) if st.session_state.sector in st.session_state.gics_sectors else 0
@@ -493,21 +518,38 @@ t_triage, t_rischi, t_tax, t_cbam, t_down = st.tabs([
 # TAB 0: TRIAGE NORMATIVO, GAP ANALYSIS E DOPPIA MATERIALITÀ
 # =====================================================================
 with t_triage:
-    st.header("🧭 1. Test di Assoggettabilità", help="Verifica l'obbligo di rendicontazione secondo l'algoritmo normativo della Direttiva (UE) 2022/2464 (CSRD).")
+    st.header("🧭 1. Test di Assoggettabilità", help="Verifica l'obbligo di rendicontazione secondo l'algoritmo normativo della Direttiva (UE) 2022/2464 (CSRD - Modifiche Omnibus per Report 2026/2027).")
     
-    soglia_attivo = st.session_state.totale_attivo > 25000000
-    soglia_ricavi = st.session_state.revenue > 50000000
-    soglia_dip = st.session_state.dipendenti > 250
-    score_grandi = sum([soglia_attivo, soglia_ricavi, soglia_dip])
+    # Nuove soglie CSRD Omnibus 2026/2027
+    soglia_dipendenti_grandi = st.session_state.dipendenti > 1000
+    soglia_ricavi_grandi = st.session_state.revenue > 450000000  # 450 milioni euro
     
-    st.info(f"**Dati Attuali:** Attivo: {st.session_state.totale_attivo/1e6:.1f}M € | Ricavi: {st.session_state.revenue/1e6:.1f}M € | Dipendenti: {st.session_state.dipendenti} | Quotata: {'Sì' if st.session_state.quotata else 'No'} | Settore: {st.session_state.sector} - {st.session_state.industry}")
+    # Definizione paesi UE (per identificare extra-UE)
+    paesi_ue = ['Italia', 'Germania', 'Francia', 'Spagna', 'Paesi Bassi', 'Svezia', 'Austria', 'Belgio', 'Bulgaria', 'Cipro', 'Croazia', 'Danimarca', 'Slovacchia', 'Slovenia', 'Estonia', 'Finlandia', 'Grecia', 'Irlanda', 'Lettonia', 'Lituania', 'Lussemburgo', 'Malta', 'Polonia', 'Portogallo', 'Repubblica Ceca', 'Romania', 'Ungheria']
+    e_impresa_ue = st.session_state.selected_country in paesi_ue
+    e_impresa_extra_ue = not e_impresa_ue
     
-    if score_grandi >= 2:
+    # Criteri di assoggettabilità CSRD (Omnibus)
+    # Criterio 1: Grandi Imprese Quotate e non (UE): dipendenti > 1.000 AND ricavi > 450M
+    csrd_grande_impresa = soglia_dipendenti_grandi and soglia_ricavi_grandi
+    
+    # Criterio 2: Imprese Extra-UE con ricavi > 450M nell'UE
+    csrd_extra_ue = e_impresa_extra_ue and st.session_state.revenue > 450000000
+    
+    # Esclusione PMI quotate (precedentemente incluse)
+    e_pmi_quotata = st.session_state.quotata and not csrd_grande_impresa
+    
+    st.info(f"**Dati Attuali:** Attivo: {st.session_state.totale_attivo/1e6:.1f}M € | Ricavi: {st.session_state.revenue/1e6:.1f}M € | Dipendenti: {st.session_state.dipendenti} | Quotata: {'Sì' if st.session_state.quotata else 'No'} | Paese: {st.session_state.selected_country} | Settore: {st.session_state.sector} - {st.session_state.industry}")
+    
+    if csrd_grande_impresa or csrd_extra_ue:
         status_normativo = "CSRD_GRANDE"
-        st.error("### 🏢 ESITO: OBBLIGO CSRD (Grande Impresa)", icon="⚖️")
-    elif st.session_state.quotata:
-        status_normativo = "CSRD_PMI"
-        st.warning("### 📈 ESITO: OBBLIGO CSRD (PMI Quotata)", icon="⚖️")
+        if csrd_extra_ue:
+            st.error("### 🌍 ESITO: OBBLIGO CSRD (Impresa Extra-UE con Ricavi > 450M nell'UE)", icon="⚖️")
+        else:
+            st.error("### 🏢 ESITO: OBBLIGO CSRD (Grande Impresa: Dipendenti > 1.000 e Ricavi > 450M)", icon="⚖️")
+    elif e_pmi_quotata:
+        status_normativo = "VSME"
+        st.success("### 🌱 ESITO: PERCORSO VOLONTARIO (PMI Quotata - Esente per Omnibus)", icon="⚖️")
     else:
         status_normativo = "VSME"
         st.success("### 🌱 ESITO: PERCORSO VOLONTARIO (PMI - EFRAG VSME)", icon="⚖️")
@@ -684,7 +726,7 @@ with t_rischi:
     rt_fisico, rt_transizione, rt_credito = st.tabs(["🛰️ Mappa Asset & Rischio Fisico", "🔄 Transizione (GHG)", "💰 Stress Test (NGFS)"])
     
     with rt_fisico:
-        st.subheader("1. Mappatura Rischio Portfolio Asset", help="Rendering interattivo degli asset aziendali. Elabora file CSV usando le colonne 'Lat' e 'Lon' per posizionare le centrali, processando i dati tramite Plotly Mapbox.")
+        st.subheader("1. Mappatura Rischio Portfolio Asset", help="Rendering interattivo degli asset aziendali. Elabora file CSV, XLSX o XLS usando le colonne 'Lat' e 'Lon' per posizionare le centrali, processando i dati tramite Plotly Mapbox.")
         
         if st.session_state.portfolio_df.empty and os.path.exists("centrali_operative_esatte.csv"):
             try:
@@ -692,19 +734,36 @@ with t_rischi:
                 st.session_state.portfolio_df = process_portfolio_dataframe(df_map)
             except: pass
             
+        def load_portfolio_file(uploaded_file):
+            """Carica file CSV, XLSX o XLS e ritorna un DataFrame."""
+            try:
+                if uploaded_file.name.endswith('.csv'):
+                    return pd.read_csv(uploaded_file)
+                elif uploaded_file.name.endswith(('.xlsx', '.xls')):
+                    return pd.read_excel(uploaded_file)
+                else:
+                    st.error(f"Formato file non supportato: {uploaded_file.name}. Usa CSV, XLSX o XLS.")
+                    return pd.DataFrame()
+            except Exception as e:
+                st.error(f"Errore nel caricamento del file: {str(e)}")
+                return pd.DataFrame()
+            
         with st.expander("🔄 Carica un portfolio impianti diverso (Upload / GitHub)"):
             col_m1, col_m2 = st.columns([1, 1])
-            with col_m1: uploaded_portfolio = st.file_uploader("Carica File CSV", type=['csv'], help="Se manca la colonna delle coordinate, il sistema avvierà un processo NLP per interrogare il servizio geolocale di OpenStreetMap.")
+            with col_m1: uploaded_portfolio = st.file_uploader("Carica File (CSV, XLSX, XLS)", type=['csv', 'xlsx', 'xls'], help="Se manca la colonna delle coordinate, il sistema avvierà un processo NLP per interrogare il servizio geolocale di OpenStreetMap.")
             with col_m2:
                 github_url = st.text_input("URL GitHub Raw", help="Inserisci il link 'Raw' di GitHub per scaricare database pesanti in frazioni di secondo aggirando i rate limit.")
                 use_github = st.checkbox("Usa link GitHub")
 
             if st.button("Genera Mappa da nuovo file"):
                 df_map = pd.DataFrame()
-                if uploaded_portfolio and not use_github: df_map = pd.read_csv(uploaded_portfolio)
+                if uploaded_portfolio and not use_github: 
+                    df_map = load_portfolio_file(uploaded_portfolio)
                 elif use_github and github_url:
-                    try: df_map = pd.read_csv(github_url)
-                    except: st.error("Errore download da GitHub.")
+                    try: 
+                        df_map = pd.read_csv(github_url)
+                    except: 
+                        st.error("Errore download da GitHub.")
                 
                 if not df_map.empty:
                     st.session_state.portfolio_df = process_portfolio_dataframe(df_map)
