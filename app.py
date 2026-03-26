@@ -10,7 +10,7 @@ from functools import lru_cache
 import requests
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="CarbonRisk Radar PRO", layout="wide")
+st.set_page_config(page_title="CarbonRisk AI Enterprise", layout="wide")
 
 # --- CACHE PERSISTENTE E THROTTLING ---
 CACHE_DIR = ".yfinance_cache"
@@ -252,7 +252,21 @@ for country_name in countries:
                 
             data.append({'Scenario': scenario, 'Paese': country_name, 'Anno': year, 'Prezzo Carbonio Base': price})
 
-df_dummy = pd.DataFrame(data)
+if 'gics_sectors' not in st.session_state:
+    st.session_state.gics_sectors = {
+        "Industrials": ["Aerospace & Defense", "Building Products", "Construction & Engineering", "Electrical Equipment", "Industrial Conglomerates", "Machinery", "Commercial Services", "Transportation"],
+        "Energy": ["Oil, Gas & Consumable Fuels", "Energy Equipment & Services"],
+        "Materials": ["Chemicals", "Construction Materials", "Containers & Packaging", "Metals & Mining", "Paper & Forest Products"],
+        "Consumer Discretionary": ["Automobiles & Components", "Consumer Durables & Apparel", "Consumer Services", "Retailing"],
+        "Consumer Staples": ["Food & Staples Retailing", "Food, Beverage & Tobacco", "Household & Personal Products"],
+        "Health Care": ["Health Care Equipment & Services", "Pharmaceuticals & Biotechnology"],
+        "Financials": ["Banks", "Financial Services", "Insurance"],
+        "Information Technology": ["Software & Services", "Technology Hardware & Equipment", "Semiconductors"],
+        "Communication Services": ["Telecommunication Services", "Media & Entertainment"],
+        "Utilities": ["Electric Utilities", "Gas Utilities", "Multi-Utilities", "Water Utilities", "Renewable Electricity"],
+        "Real Estate": ["Equity REITs", "Real Estate Management & Development"],
+        "Altro / Non Specificato": ["Altro"]
+    }
 
 # --- 3. MOTORE DI CALCOLO ---
 country_data = df_dummy[df_dummy['Paese'] == country].copy()
@@ -328,49 +342,25 @@ color_map = {
     'Politiche Attuali (BAU)': '#00CC96'
 }
 
-with tab1:
-    fig1 = px.line(plot_df, x="Anno", y="Utile Netto (€)", color="Scenario", markers=True,
-                   color_discrete_map=color_map,
-                   title=f"Proiezioni dell'Utile Netto per l'Asset in {country} (Severità Legale: {policy_multiplier}x)",
-                   template="plotly_white")
+# --- FUNZIONI DATI E MAPPA ---
+def process_portfolio_dataframe(df):
+    cols = [c.lower() for c in df.columns]
     
-    fig1.update_traces(line_shape='spline', line=dict(width=3), marker=dict(size=8)) 
-    fig1.add_hline(y=0, line_dash="dot", line_color="black", annotation_text="Linea di Fallimento", annotation_position="top left")
+    if 'address' in cols: df.rename(columns={df.columns[cols.index('address')]: 'Address'}, inplace=True)
+    if 'operator' in cols: df.rename(columns={df.columns[cols.index('operator')]: 'Operator'}, inplace=True)
+    if 'installation name' in cols: df.rename(columns={df.columns[cols.index('installation name')]: 'Name'}, inplace=True)
+    elif 'nome' in cols: df.rename(columns={df.columns[cols.index('nome')]: 'Name'}, inplace=True)
+    if 'installation id' in cols: df.rename(columns={df.columns[cols.index('installation id')]: 'ID'}, inplace=True)
     
-    fig1.update_layout(
-        hovermode="x unified",
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.15,
-            xanchor="center",
-            x=0.5,
-            title=None
-        ),
-        margin=dict(b=80) 
-    )
-    st.plotly_chart(fig1, use_container_width=True)
+    lat_col = next((c for c in df.columns if c.lower() in ['lat', 'latitude', 'latitudine']), None)
+    lon_col = next((c for c in df.columns if c.lower() in ['lon', 'lng', 'longitude', 'longitudine']), None)
     
-with tab2:
-    fig2 = px.line(plot_df, x="Anno", y="Prezzo Carbonio Effettivo (€/t)", color="Scenario", markers=True,
-                   color_discrete_map=color_map,
-                   title=f"Traiettoria della Tassa sul Carbonio in {country}",
-                   template="plotly_white")
-    fig2.update_traces(line_shape='spline', line=dict(width=3))
-    
-    fig2.update_layout(
-        hovermode="x unified",
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.15,
-            xanchor="center",
-            x=0.5,
-            title=None
-        ),
-        margin=dict(b=80)
-    )
-    st.plotly_chart(fig2, use_container_width=True)
+    if lat_col and lon_col:
+        df.rename(columns={lat_col: 'Lat', lon_col: 'Lon'}, inplace=True)
+        df = df.dropna(subset=['Lat', 'Lon'])
+    else:
+        st.error("Il file deve contenere colonne 'Lat' e 'Lon'.")
+        return pd.DataFrame()
 
 with tab3:
     st.subheader("📥 Esporta Analisi")
