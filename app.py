@@ -140,6 +140,85 @@ def get_company_info(ticker):
 
 # --- CONFIGURAZIONE PAGINA (originale) ---
 
+# --- COSTANTI VSME ---
+VSME_SCALE_OPTIONS = ["Yes", "Yes, but integration needed", "No, but planned", "No"]
+VSME_DEFAULT_FILE = "Gap Analysis Template_VSME_Standard_Tool v3.xlsx"
+
+def load_vsme_checklist_from_excel(file_path=VSME_DEFAULT_FILE):
+    """Carica le domande del checklist VSME dal file Excel."""
+    try:
+        import openpyxl
+        # Carica il workbook con data_only=True per ottenere valori calcolati, non formule
+        wb = openpyxl.load_workbook(file_path, data_only=True)
+
+        def parse_datapoints(value):
+            if value is None or value == "":
+                return 0
+            if isinstance(value, (int, float)):
+                return int(value)
+            if isinstance(value, str):
+                cleaned = value.strip().replace(",", ".")
+                try:
+                    return int(float(cleaned))
+                except ValueError:
+                    return 0
+            return 0
+
+        vsme_scale_options = VSME_SCALE_OPTIONS
+        if "Support" in wb.sheetnames:
+            ws_support = wb["Support"]
+            excel_scale = []
+            for row_idx in range(1, 10):
+                value = ws_support.cell(row_idx, 1).value
+                if value and isinstance(value, str) and value.strip():
+                    excel_scale.append(value.strip())
+                elif excel_scale:
+                    break
+            if len(excel_scale) >= 2:
+                vsme_scale_options = excel_scale
+        
+        sheet_map = {
+            'GEN': 'Checklist_General_Information',
+            'E': 'Checklist_Environment',
+            'S': 'Checklist_Social',
+            'G': 'Checklist_Governance',
+        }
+        
+        checklist_data = {'base': {}, 'comprehensive': {}}
+        
+        for pillar, sheet_name in sheet_map.items():
+            if sheet_name not in wb.sheetnames:
+                continue
+            ws = wb[sheet_name]
+            checklist_data['base'][pillar] = []
+            checklist_data['comprehensive'][pillar] = []
+            
+            # Leggi da riga 4 (indice 3) in poi
+            for row_idx in range(4, ws.max_row + 1):
+                cell_b = ws.cell(row_idx, 2).value
+                cell_c = ws.cell(row_idx, 3).value
+                cell_h = ws.cell(row_idx, 8).value
+                cell_j = ws.cell(row_idx, 10).value
+                
+                # Column B = documento base, Column D = datapoints base
+                if cell_b and isinstance(cell_b, str) and cell_b.strip():
+                    datapoints_base = parse_datapoints(ws.cell(row_idx, 4).value)
+                    if datapoints_base == 0:
+                        # Fallback su colonna C per compatibilita con eventuali template legacy.
+                        datapoints_base = parse_datapoints(cell_c)
+                    label_base = f"{cell_b.strip()} ({datapoints_base} datapoints)"
+                    checklist_data['base'][pillar].append(label_base)
+                
+                # Column H = documento comprehensive, Column J = datapoints comprehensive
+                if cell_h and isinstance(cell_h, str) and cell_h.strip():
+                    datapoints_comp = parse_datapoints(cell_j)
+                    label_comp = f"{cell_h.strip()} ({datapoints_comp} datapoints)"
+                    checklist_data['comprehensive'][pillar].append(label_comp)
+        
+        return checklist_data, vsme_scale_options, None
+    except Exception as e:
+        return None, VSME_SCALE_OPTIONS, str(e)
+
 # --- SINCRONIZZAZIONE (Session State) ---
 st.session_state.setdefault('revenue', 0)
 st.session_state.setdefault('opex', 0)
@@ -161,6 +240,7 @@ st.session_state.setdefault('capex_totale', 0)
 st.session_state.setdefault('tax_portfolio', [])
 st.session_state.setdefault('cbam_portfolio', [])
 st.session_state.setdefault('gap_answers', {})
+st.session_state.setdefault('gap_documents', {})
 st.session_state.setdefault('portfolio_df', pd.DataFrame())
 
 if 'materiality_scores' not in st.session_state:
@@ -198,7 +278,7 @@ def sync_from_perc(): st.session_state.em_final = int(get_tot_emissions() * (1 -
 def sync_from_scopes(): sync_from_perc()
 
 # --- SCALE DI VALUTAZIONE ---
-SCALE_OPTIONS = [
+ESRS_SCALE_OPTIONS = [
     "Per niente (0% - Nessuna azione intrapresa)",
     "In fase iniziale (Attività pianificata o discussa)",
     "Parzialmente (Policy esistente, implementazione frammentaria)",
@@ -206,7 +286,7 @@ SCALE_OPTIONS = [
     "Quasi completamente (Manca solo verifica finale o XBRL)",
     "Completamente (100% - Allineato a ESRS e verificabile)"
 ]
-SCALE_VALUES = {
+ESRS_SCALE_VALUES = {
     "Per niente (0% - Nessuna azione intrapresa)": 0,
     "In fase iniziale (Attività pianificata o discussa)": 1,
     "Parzialmente (Policy esistente, implementazione frammentaria)": 2,
@@ -556,36 +636,312 @@ with t_triage:
 
     st.divider()
     
-    def render_gap_list(questions, pillar_code, tab_context, prefix="gap"):
+    def render_gap_list(questions, pillar_code, tab_context, scale_options, prefix="gap"):
         with tab_context:
             for i, q in enumerate(questions):
-                val = st.selectbox(f"{i+1}. {q}", SCALE_OPTIONS, key=f"{prefix}_{pillar_code}_{i}", help=f"Requisito EFRAG (Pilastro {pillar_code}). Valuta la prontezza documentale della tua azienda su questo punto.")
-                st.session_state.gap_answers[f"{prefix}_{pillar_code}_{i}"] = {"ans": val, "pillar": pillar_code}
+                # Creare colonne: selectbox + bottone PDF allineati
+                col_q, col_pdf = st.columns([4, 1], vertical_alignment="bottom")
+                
+                with col_q:
+                    val = st.selectbox(
+                        f"{i+1}. {q}",
+                        scale_options,
+                        key=f"{prefix}_{pillar_code}_{i}",
+                        help=f"Requisito EFRAG (Pilastro {pillar_code}). Valuta la prontezza documentale della tua azienda su questo punto."
+                    )
+                    st.session_state.gap_answers[f"{prefix}_{pillar_code}_{i}"] = {
+                        "ans": val,
+                        "pillar": pillar_code,
+                        "q": q,
+                    }
+                
+                with col_pdf:
+                    doc_key = f"{prefix}_{pillar_code}_{i}"
+                    
+                    # Determina il label del bottone in base allo stato
+                    if doc_key in st.session_state.gap_documents and st.session_state.gap_documents[doc_key]:
+                        btn_label = "PDF ✅"
+                    else:
+                        btn_label = "Carica PDF"
+                    
+                    # Bottone di caricamento PDF
+                    if st.button(btn_label, key=f"btn_pdf_{prefix}_{pillar_code}_{i}", help="Carica il PDF di supporto per questa domanda", use_container_width=True):
+                        st.session_state[f"show_pdf_{doc_key}"] = not st.session_state.get(f"show_pdf_{doc_key}", False)
+                    
+                    # Mostra uploader se bottone cliccato
+                    if st.session_state.get(f"show_pdf_{doc_key}", False):
+                        uploaded_file = st.file_uploader(
+                            "Carica PDF",
+                            type="pdf",
+                            key=f"uploader_{prefix}_{pillar_code}_{i}",
+                            help="Seleziona il documento PDF pertinente a questa domanda"
+                        )
+                        if uploaded_file:
+                            # Salva il file in memoria/session state
+                            st.session_state.gap_documents[doc_key] = {
+                                'filename': uploaded_file.name,
+                                'data': uploaded_file.getvalue(),
+                                'timestamp': datetime.now().isoformat()
+                            }
+                            st.success(f"✅ PDF caricato: {uploaded_file.name}")
 
     if status_normativo == "VSME":
-        st.header("🔍 2. Readiness Data Availability (VSME)", help="L'EFRAG VSME (Voluntary SME) prevede 3 moduli progressivi. Non chiede l'analisi di Doppia Materialità ma la raccolta di indicatori (KPI) base.")
-        
-        st.radio("Livello di Ambizione VSME:", ["Modulo Base", "Modulo Narrativo (PAT)", "Modulo Business Partner"], horizontal=True, help="Base: solo bollette ed HR. Narrativo: include policy scritte. Partner: include supply chain per rispondere alle Banche.")
-        
-        vsme_qs_E = ["Consumi Energetici suddivisi (rinnovabili vs fossili)?", "Emissioni GHG Scope 1 e Scope 2 misurate?", "Registro dei rifiuti aggiornato?"]
-        vsme_qs_S = ["Dati organico per genere, contratto e orario?", "Monitoraggio infortuni sul lavoro?", "Ore di formazione medie annue calcolate?"]
-        vsme_qs_G = ["Policy scritta su etica e diritti umani?", "Referente interno per la sostenibilità?"]
-        
-        c_v_E, c_v_S, c_v_G = st.tabs(["🌍 Ambiente (E)", "👥 Sociale (S)", "⚖️ Governance (G)"])
-        render_gap_list(vsme_qs_E, "E", c_v_E, "vsme")
-        render_gap_list(vsme_qs_S, "S", c_v_S, "vsme")
-        render_gap_list(vsme_qs_G, "G", c_v_G, "vsme")
-        
-        if st.button("Calcola Readiness VSME", use_container_width=True, help="Calcola la media matematica della disponibilità del dato e restituisce lo stato di maturità (Data Availability Matrix)."):
-            scores = [SCALE_VALUES[data["ans"]] for k, data in st.session_state.gap_answers.items() if k.startswith("vsme")]
-            avg_score = sum(scores)/len(scores) if scores else 0
+        st.header("🔍 2. Gap analysis (VSME)", help="L'EFRAG VSME (Voluntary SME) prevede l'analisi Gap per Modulo Base e Modulo Completo.")
+        module_labels = {
+            "base": "Basic Module",
+            "comprehensive": "Comprehensive Module",
+            "absolute": "Analisi VSME Assoluta",
+        }
+        module_choice = st.radio(
+            "Livello di Ambizione VSME:",
+            [module_labels["base"], module_labels["comprehensive"], module_labels["absolute"]],
+            horizontal=True,
+            key="vsme_module_choice",
+            help=(
+                "Comprehensive Module: In aggiunta al Modulo Base.\n"
+                "Analisi VSME Assoluta: Aggrega i dati inseriti nei due moduli (Basic e Comprehensive)."
+            ),
+        )
+        selected_mode = next((k for k, v in module_labels.items() if v == module_choice), "base")
+
+        checklist_data, vsme_scale_options, err = load_vsme_checklist_from_excel()
+        if err:
+            st.warning(f"WARNING: {err}. Uso le domande VSME predefinite.")
+            checklist_data = None
+            vsme_scale_options = VSME_SCALE_OPTIONS
+
+        # Se il caricamento è fallito o non ha dati, usa le domande predefinite.
+        default_questions = {
+            "GEN": ["Overview della Governance generale/sostenibilità presente?"],
+            "E": [
+                "Consumi Energetici suddivisi (rinnovabili vs fossili)?",
+                "Emissioni GHG Scope 1 e Scope 2 misurate?",
+                "Registro dei rifiuti aggiornato?",
+            ],
+            "S": [
+                "Dati organico per genere, contratto e orario?",
+                "Monitoraggio infortuni sul lavoro?",
+                "Ore di formazione medie annue calcolate?",
+            ],
+            "G": ["Policy scritta su etica e diritti umani?", "Referente interno per la sostenibilità?"],
+        }
+        questions_by_module = {
+            "base": {pillar: list(questions) for pillar, questions in default_questions.items()},
+            "comprehensive": {pillar: list(questions) for pillar, questions in default_questions.items()},
+        }
+
+        if not checklist_data or not checklist_data.get('base'):
+            pass
+        else:
+            questions_by_module = {
+                "base": {
+                    "GEN": checklist_data["base"].get("GEN", []),
+                    "E": checklist_data["base"].get("E", []),
+                    "S": checklist_data["base"].get("S", []),
+                    "G": checklist_data["base"].get("G", []),
+                },
+                "comprehensive": {
+                    "GEN": checklist_data["comprehensive"].get("GEN", []),
+                    "E": checklist_data["comprehensive"].get("E", []),
+                    "S": checklist_data["comprehensive"].get("S", []),
+                    "G": checklist_data["comprehensive"].get("G", []),
+                },
+            }
+
+        pillar_titles = {
+            "GEN": "General Information",
+            "E": "Environment",
+            "S": "Social",
+            "G": "Governance",
+        }
+        response_colors = {
+            "Yes": "#2ecc71",
+            "Yes, but integration needed": "#f39c12",
+            "No, but planned": "#3498db",
+            "No": "#e74c3c",
+        }
+        default_palette = ["#2ecc71", "#f39c12", "#3498db", "#e74c3c", "#9b59b6", "#16a085"]
+        for idx, option in enumerate(vsme_scale_options):
+            response_colors.setdefault(option, default_palette[idx % len(default_palette)])
+
+        def build_vsme_results(module_payloads, scale_options):
+            valid_keys = set()
+            key_to_module = {}
+            for payload in module_payloads:
+                prefix = payload["prefix"]
+                module_name = payload["module_name"]
+                questions = payload["questions"]
+                for pillar in ["GEN", "E", "S", "G"]:
+                    if pillar in questions:
+                        for i in range(len(questions[pillar])):
+                            key = f"{prefix}_{pillar}_{i}"
+                            valid_keys.add(key)
+                            key_to_module[key] = module_name
             
-            c1, c2 = st.columns([1, 2])
-            c1.metric("Punteggio Qualità Dato", f"{avg_score:.1f} / 5.0", help="1-2: Lacuna Totale. 3-4: Dati Esistenti. 5: Dato pronto e documentato.")
-            with c2:
-                if avg_score < 2.0: st.error("🔴 Non pronti per il Modulo Base. Inizia a raccogliere bollette e dati HR.")
-                elif avg_score < 4.0: st.warning("🟡 Pronti per il Modulo Base. Migliora tracciabilità per il Modulo PAT.")
-                else: st.success("🟢 Pronti per Modulo PAT o Business Partner. Ottimo posizionamento bancario!")
+            pillar_totals = {pillar: {option: 0 for option in scale_options} for pillar in pillar_titles}
+            pillar_details = {pillar: [] for pillar in pillar_titles}
+            for key, data in st.session_state.gap_answers.items():
+                if key not in valid_keys:
+                    continue
+                pillar = data.get("pillar")
+                answer = data.get("ans")
+                question = data.get("q", "")
+                module_name = key_to_module.get(key, "")
+                match = re.search(r'\((\d+) datapoints\)', question)
+                datapoints = int(match.group(1)) if match else 0
+                clean_question = re.sub(r'\s*\(\d+ datapoints\)$', '', question).strip()
+                if pillar in pillar_totals and answer in pillar_totals[pillar]:
+                    pillar_totals[pillar][answer] += datapoints
+                if pillar in pillar_details:
+                    pillar_details[pillar].append({
+                        "Modulo": module_name,
+                        "Checklist": pillar_titles.get(pillar, pillar),
+                        "Domanda": clean_question,
+                        "Risposta": answer,
+                        "Datapoints": datapoints,
+                    })
+
+            per_pillar_summary = {}
+            per_pillar_details = {}
+            stacked_rows = []
+            all_rows = []
+            for pillar, title in pillar_titles.items():
+                total_datapoints = sum(pillar_totals[pillar].values())
+                summary_rows = []
+                detail_rows = []
+                for option in scale_options:
+                    datapoints = pillar_totals[pillar][option]
+                    pct = (datapoints / total_datapoints * 100) if total_datapoints else 0.0
+                    summary_row = {
+                        "Checklist": title,
+                        "Risposta": option,
+                        "Datapoints": datapoints,
+                        "% sul totale checklist": pct,
+                    }
+                    summary_rows.append(summary_row)
+                    stacked_rows.append(summary_row)
+                for row in pillar_details[pillar]:
+                    detail_row = row.copy()
+                    detail_row["% sul totale checklist"] = (
+                        detail_row["Datapoints"] / total_datapoints * 100 if total_datapoints else 0.0
+                    )
+                    detail_rows.append(detail_row)
+                    all_rows.append(detail_row)
+                df_summary = pd.DataFrame(summary_rows)
+                df_summary["% sul totale checklist"] = df_summary["% sul totale checklist"].apply(lambda x: f"{x:.2f}%")
+                df_details = pd.DataFrame(detail_rows)
+                if len(df_details) > 0:
+                    df_details["% sul totale checklist"] = df_details["% sul totale checklist"].apply(lambda x: f"{x:.2f}%")
+                per_pillar_summary[pillar] = df_summary
+                per_pillar_details[pillar] = df_details
+
+            df_stacked = pd.DataFrame(stacked_rows)
+            if len(df_stacked) > 0:
+                df_stacked["% sul totale checklist"] = df_stacked["% sul totale checklist"].apply(lambda x: f"{x:.2f}%")
+            df_all_details = pd.DataFrame(all_rows)
+            if len(df_all_details) > 0:
+                df_all_details["% sul totale checklist"] = df_all_details["% sul totale checklist"].apply(lambda x: f"{x:.2f}%")
+            
+            return {
+                "summary": per_pillar_summary,
+                "details": per_pillar_details,
+                "stacked": df_stacked,
+                "all_details": df_all_details,
+            }
+
+        tab_summary = None
+        if selected_mode in ["base", "comprehensive"]:
+            module_questions = questions_by_module[selected_mode]
+            module_prefix = f"vsme_{selected_mode}"
+
+            tab_gen, c_v_E, c_v_S, c_v_G, tab_summary = st.tabs(["General Information", "Environment", "Social", "Governance", "Riepilogo"])
+            if module_questions["GEN"]:
+                render_gap_list(module_questions["GEN"], "GEN", tab_gen, vsme_scale_options, module_prefix)
+            render_gap_list(module_questions["E"], "E", c_v_E, vsme_scale_options, module_prefix)
+            render_gap_list(module_questions["S"], "S", c_v_S, vsme_scale_options, module_prefix)
+            render_gap_list(module_questions["G"], "G", c_v_G, vsme_scale_options, module_prefix)
+        if selected_mode == "absolute":
+            module_payloads = [
+                {
+                    "module_name": module_labels["base"],
+                    "prefix": "vsme_base",
+                    "questions": questions_by_module["base"],
+                },
+                {
+                    "module_name": module_labels["comprehensive"],
+                    "prefix": "vsme_comprehensive",
+                    "questions": questions_by_module["comprehensive"],
+                },
+            ]
+        else:
+            module_payloads = [
+                {
+                    "module_name": module_labels[selected_mode],
+                    "prefix": f"vsme_{selected_mode}",
+                    "questions": questions_by_module[selected_mode],
+                }
+            ]
+
+        results = build_vsme_results(module_payloads, vsme_scale_options)
+
+        target_container = tab_summary if tab_summary is not None else st.container()
+        with target_container:
+            st.divider()
+            if selected_mode == "absolute":
+                st.subheader("📊 Analisi VSME Assoluta")
+                st.write("Confronto stacked per checklist aggregando Basic Module e Comprehensive Module.")
+            else:
+                st.subheader(f"📊 Riepilogo VSME - {module_labels[selected_mode]}")
+
+            df_stacked = results["stacked"]
+            fig_stacked = px.bar(
+                df_stacked,
+                x="Checklist",
+                y="% sul totale checklist",
+                color="Risposta",
+                barmode="stack",
+                text=df_stacked["% sul totale checklist"],
+                color_discrete_map=response_colors,
+                category_orders={"Checklist": list(pillar_titles.values())},
+            )
+            fig_stacked.update_layout(
+                yaxis_title="Percentuale sul totale datapoints",
+                xaxis_title="Checklist",
+                legend_title="Risposta",
+            )
+            st.plotly_chart(fig_stacked, width='stretch', key=f"vsme_stacked_{selected_mode}")
+
+            st.subheader("📋 Tabella completa")
+            st.dataframe(results["all_details"], width='stretch', hide_index=True)
+
+        if selected_mode in ["base", "comprehensive"]:
+            tab_mapping = {
+                "GEN": tab_gen,
+                "E": c_v_E,
+                "S": c_v_S,
+                "G": c_v_G,
+            }
+
+            for pillar, tab in tab_mapping.items():
+                with tab:
+                    df_summary = results["summary"][pillar]
+                    df_details = results["details"][pillar]
+                    st.subheader(f"📊 {pillar_titles[pillar]}")
+                    fig = px.bar(
+                        df_summary,
+                        x="Risposta",
+                        y="% sul totale checklist",
+                        color="Risposta",
+                        text=df_summary["% sul totale checklist"],
+                        color_discrete_map=response_colors,
+                    )
+                    fig.update_layout(
+                        showlegend=False,
+                        yaxis_title="Percentuale sul totale datapoints",
+                        xaxis_title="Risposta",
+                    )
+                    st.plotly_chart(fig, width='stretch', key=f"vsme_bar_{selected_mode}_{pillar}")
+                    st.dataframe(df_details, width='stretch', hide_index=True)
 
     else:
         st.header("🔍 2. Readiness & Gap Analysis (ESRS)", help="Valutazione dello stato dei processi rispetto ai complessi Data Points obbligatori dello standard ESRS (European Sustainability Reporting Standards).")
@@ -627,16 +983,16 @@ with t_triage:
         ]
 
         c_g_E, c_g_S, c_g_G = st.tabs(["🌍 Ambiente", "👥 Sociale", "⚖️ Governance"])
-        render_gap_list(gap_qs_E, "E", c_g_E, "csrd")
-        render_gap_list(gap_qs_S, "S", c_g_S, "csrd")
-        render_gap_list(gap_qs_G, "G", c_g_G, "csrd")
+        render_gap_list(gap_qs_E, "E", c_g_E, ESRS_SCALE_OPTIONS, "csrd")
+        render_gap_list(gap_qs_S, "S", c_g_S, ESRS_SCALE_OPTIONS, "csrd")
+        render_gap_list(gap_qs_G, "G", c_g_G, ESRS_SCALE_OPTIONS, "csrd")
 
         if st.button("Calcola Livello di Readiness ESRS", use_container_width=True, help="Applica la ponderazione su 30 Data Point EFRAG e traccia il radar della maturità aziendale."):
             scores = {'E': 0, 'S': 0, 'G': 0}
             max_scores = {'E': 0, 'S': 0, 'G': 0}
             for q_id, data in st.session_state.gap_answers.items():
                 if q_id.startswith("csrd"):
-                    val_num = SCALE_VALUES[data["ans"]]
+                    val_num = ESRS_SCALE_VALUES[data["ans"]]
                     scores[data["pillar"]] += val_num
                     max_scores[data["pillar"]] += 5 
                 
@@ -693,9 +1049,9 @@ with t_triage:
                         imp_sc, fin_sc = [], []
                         for idx, (q_text, q_type) in enumerate(questions):
                             h_text = "Asse Finanziario (Outside-In): I rischi climatici creano danni alle finanze dell'azienda." if q_type == 'F' else "Asse Impatto (Inside-Out): L'azienda crea danni alle persone o all'ambiente."
-                            ans = st.selectbox(f"[{'Impatto' if q_type == 'I' else 'Finanza'}] {q_text}", SCALE_OPTIONS, key=f"dma_{pillar_code}_{topic}_{idx}", help=h_text)
-                            if q_type == 'I': imp_sc.append(SCALE_VALUES[ans])
-                            else: fin_sc.append(SCALE_VALUES[ans])
+                            ans = st.selectbox(f"[{'Impatto' if q_type == 'I' else 'Finanza'}] {q_text}", ESRS_SCALE_OPTIONS, key=f"dma_{pillar_code}_{topic}_{idx}", help=h_text)
+                            if q_type == 'I': imp_sc.append(ESRS_SCALE_VALUES[ans])
+                            else: fin_sc.append(ESRS_SCALE_VALUES[ans])
                         
                         avg_imp = sum(imp_sc)/len(imp_sc) if imp_sc else (sum(fin_sc)/len(fin_sc) if fin_sc else 0)
                         avg_fin = sum(fin_sc)/len(fin_sc) if fin_sc else avg_imp
