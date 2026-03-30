@@ -18,7 +18,7 @@ from functools import lru_cache
 import shutil
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="CarbonRisk AI Enterprise", layout="wide")
+st.set_page_config(page_title="SMEs Reporting Support", layout="wide")
 
 # --- CACHE PERSISTENTE E THROTTLING (Anti-Rate-Limiting) ---
 CACHE_DIR = ".yfinance_cache"
@@ -588,7 +588,7 @@ with st.sidebar:
             st.rerun()
 
 # --- CORPO PRINCIPALE E TABS ---
-st.title("🌍 CarbonRisk AI Enterprise")
+st.title("🌍 SMEs Reporting Support")
 
 t_triage, t_rischi, t_tax, t_cbam, t_down = st.tabs([
     "🧭 Triage, Gap & Materialità", "📊 Analisi Rischi & Mappe", "🇪🇺 Tassonomia UE", "🌍 CBAM (Dogana)", "📥 Report & Export"
