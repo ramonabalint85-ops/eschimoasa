@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="SMEs Reporting Support", layout="wide")
+st.set_page_config(page_title="Supporto alla Rendicontazione PMI", layout="wide")
 
 # --- CACHE PERSISTENTE E THROTTLING (Anti-Rate-Limiting) ---
 CACHE_DIR = ".yfinance_cache"
@@ -383,7 +383,7 @@ def get_company_info(ticker):
 # --- CONFIGURAZIONE PAGINA (originale) ---
 
 # --- COSTANTI VSME ---
-VSME_SCALE_OPTIONS = ["Yes", "Yes, but integration needed", "No, but planned", "No"]
+VSME_SCALE_OPTIONS = ["Sì", "Sì, ma con integrazione necessaria", "No, ma pianificato", "No"]
 VSME_DEFAULT_FILE = "Gap Analysis Template_VSME_Standard_Tool v3.xlsx"
 VSME_DATA_COLLECTION_FILE = "Raccolta dati VSME_Template app.xlsx"
 VSME_DISCLOSURE_PILLARS = {
@@ -954,7 +954,7 @@ with st.sidebar:
 
 
 # --- CORPO PRINCIPALE E TABS ---
-st.title("🌍 SMEs Reporting Support")
+st.title("🌍 Supporto alla Rendicontazione PMI")
 
 def summarize_gap_answers(module_prefixes=None):
     rows = []
@@ -1339,9 +1339,9 @@ with t_triage:
             "G": "Governance",
         }
         response_colors = {
-            "Yes": "#2ecc71",
-            "Yes, but integration needed": "#f39c12",
-            "No, but planned": "#3498db",
+            "Sì": "#2ecc71",
+            "Sì, ma con integrazione necessaria": "#f39c12",
+            "No, ma pianificato": "#3498db",
             "No": "#e74c3c",
         }
         default_palette = ["#2ecc71", "#f39c12", "#3498db", "#e74c3c", "#9b59b6", "#16a085"]

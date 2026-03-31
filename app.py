@@ -18,7 +18,7 @@ from functools import lru_cache
 import shutil
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="CarbonRisk AI Enterprise", layout="wide")
+st.set_page_config(page_title="Supporto alla Rendicontazione PMI", layout="wide")
 
 # --- CACHE PERSISTENTE E THROTTLING (Anti-Rate-Limiting) ---
 CACHE_DIR = ".yfinance_cache"
@@ -141,7 +141,7 @@ def get_company_info(ticker):
 # --- CONFIGURAZIONE PAGINA (originale) ---
 
 # --- COSTANTI VSME ---
-VSME_SCALE_OPTIONS = ["Yes", "Yes, but integration needed", "No, but planned", "No"]
+VSME_SCALE_OPTIONS = ["Sì", "Sì, ma con integrazione necessaria", "No, ma pianificato", "No"]
 VSME_DEFAULT_FILE = "Gap Analysis Template_VSME_Standard_Tool v3.xlsx"
 
 def load_vsme_checklist_from_excel(file_path=VSME_DEFAULT_FILE):
@@ -588,7 +588,7 @@ with st.sidebar:
             st.rerun()
 
 # --- CORPO PRINCIPALE E TABS ---
-st.title("🌍 CarbonRisk AI Enterprise")
+st.title("🌍 Supporto alla Rendicontazione PMI")
 
 t_triage, t_rischi, t_tax, t_cbam, t_down = st.tabs([
     "🧭 Triage, Gap & Materialità", "📊 Analisi Rischi & Mappe", "🇪🇺 Tassonomia UE", "🌍 CBAM (Dogana)", "📥 Report & Export"
@@ -749,15 +749,15 @@ with t_triage:
             }
 
         pillar_titles = {
-            "GEN": "General Information",
-            "E": "Environment",
-            "S": "Social",
+            "GEN": "Informazioni generali",
+            "E": "Ambiente",
+            "S": "Sociale",
             "G": "Governance",
         }
         response_colors = {
-            "Yes": "#2ecc71",
-            "Yes, but integration needed": "#f39c12",
-            "No, but planned": "#3498db",
+            "Sì": "#2ecc71",
+            "Sì, ma con integrazione necessaria": "#f39c12",
+            "No, ma pianificato": "#3498db",
             "No": "#e74c3c",
         }
         default_palette = ["#2ecc71", "#f39c12", "#3498db", "#e74c3c", "#9b59b6", "#16a085"]
@@ -854,7 +854,7 @@ with t_triage:
             module_questions = questions_by_module[selected_mode]
             module_prefix = f"vsme_{selected_mode}"
 
-            tab_gen, c_v_E, c_v_S, c_v_G, tab_summary = st.tabs(["General Information", "Environment", "Social", "Governance", "Riepilogo"])
+            tab_gen, c_v_E, c_v_S, c_v_G, tab_summary = st.tabs(["Informazioni generali", "Ambiente", "Sociale", "Governance", "Riepilogo"])
             if module_questions["GEN"]:
                 render_gap_list(module_questions["GEN"], "GEN", tab_gen, vsme_scale_options, module_prefix)
             render_gap_list(module_questions["E"], "E", c_v_E, vsme_scale_options, module_prefix)
@@ -1173,6 +1173,7 @@ with t_rischi:
             with st.expander("Mostra dati tabellari"):
                 st.dataframe(df_render[['ID', 'Name', 'Operator', 'Address', 'Lat', 'Lon', 'Risk_Score']], use_container_width=True)
         else:
+            pass
 
     with rt_transizione:
         st.subheader("Calcolatore GHG (Fattori ISPRA/DEFRA)", help="Incrocia i dati di consumo grezzi (es. Metri cubi) con i 'Fattori di Emissione' approvati a livello ministeriale per dedurre in automatico l'impronta di carbonio (tCO2).")
