@@ -8,6 +8,7 @@ import time
 import numpy as np
 import PyPDF2
 import json
+import base64
 from openai import OpenAI
 from geopy.geocoders import Nominatim
 import os
@@ -23,8 +24,250 @@ st.set_page_config(page_title="SMEs Reporting Support", layout="wide")
 CACHE_DIR = ".yfinance_cache"
 CACHE_TIMEOUT_HOURS = 24
 THROTTLE_DELAY = 2
+PROJECTS_DIR = ".saved_projects"
 
 os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(PROJECTS_DIR, exist_ok=True)
+
+PROJECT_STATE_KEYS = [
+    'revenue', 'opex', 'totale_attivo', 'dipendenti', 'company_name', 'quotata',
+    'sector', 'industry', 'selected_country', 'scope1', 'scope2', 'scope3',
+    'perc_red', 'em_final', 'rata_prestito', 'policy_multiplier', 'capex_totale',
+    'tax_portfolio', 'cbam_portfolio', 'gap_answers', 'impresa_area',
+    'sucursale_eu_200', 'hq_address', 'hq_geocoded_address', 'hq_lat', 'hq_lon',
+    'status_normativo', 'vsme_module_choice', 'deliverable_type'
+]
+
+
+def sanitize_project_name(project_name):
+    sanitized = re.sub(r'[^A-Za-z0-9._ -]+', '', str(project_name)).strip()
+    sanitized = re.sub(r'\s+', '_', sanitized)
+    return sanitized[:80] or f"progetto_{int(time.time())}"
+
+
+def get_project_file(project_name):
+    return os.path.join(PROJECTS_DIR, f"{sanitize_project_name(project_name)}.json")
+
+
+def _to_json_safe(value):
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return {str(key): _to_json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_json_safe(item) for item in value]
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, np.generic):
+        return value.item()
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    return str(value)
+
+
+def serialize_dataframe(df):
+    if df is None:
+        return {"columns": [], "records": []}
+    safe_df = df.copy()
+    for column in safe_df.columns:
+        safe_df[column] = safe_df[column].map(_to_json_safe)
+    return {
+        "columns": list(safe_df.columns),
+        "records": safe_df.to_dict(orient='records')
+    }
+
+
+def deserialize_dataframe(payload):
+    if not payload:
+        return pd.DataFrame()
+    records = payload.get("records", [])
+    columns = payload.get("columns", [])
+    if not records and columns:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(records, columns=columns or None)
+
+
+def serialize_gap_documents(documents):
+    serialized = {}
+    for key, doc in (documents or {}).items():
+        if not isinstance(doc, dict):
+            continue
+        binary_data = doc.get('data', b'') or b''
+        if isinstance(binary_data, str):
+            binary_data = binary_data.encode('utf-8')
+        serialized[key] = {
+            'filename': doc.get('filename', ''),
+            'timestamp': doc.get('timestamp', ''),
+            'data_b64': base64.b64encode(binary_data).decode('ascii') if binary_data else '',
+        }
+    return serialized
+
+
+def deserialize_gap_documents(payload):
+    documents = {}
+    for key, doc in (payload or {}).items():
+        if not isinstance(doc, dict):
+            continue
+        encoded_data = doc.get('data_b64', '')
+        documents[key] = {
+            'filename': doc.get('filename', ''),
+            'timestamp': doc.get('timestamp', ''),
+            'data': base64.b64decode(encoded_data) if encoded_data else b'',
+        }
+    return documents
+
+
+def serialize_vsme_disclosure_tables(tables):
+    return {
+        key: serialize_dataframe(df)
+        for key, df in (tables or {}).items()
+        if isinstance(df, pd.DataFrame)
+    }
+
+
+def deserialize_vsme_disclosure_tables(payload):
+    return {
+        key: deserialize_dataframe(df_payload)
+        for key, df_payload in (payload or {}).items()
+    }
+
+
+def build_project_payload(project_name):
+    state = {key: _to_json_safe(st.session_state.get(key)) for key in PROJECT_STATE_KEYS}
+    state['portfolio_df'] = serialize_dataframe(st.session_state.get('portfolio_df', pd.DataFrame()))
+    state['gap_documents'] = serialize_gap_documents(st.session_state.get('gap_documents', {}))
+    state['vsme_disclosure_tables'] = serialize_vsme_disclosure_tables(st.session_state.get('vsme_disclosure_tables', {}))
+    return {
+        'project_name': project_name,
+        'saved_at': datetime.now().isoformat(),
+        'state': state,
+    }
+
+
+def normalize_project_payload(payload, fallback_name=None):
+    state = payload.get('state', {}) if isinstance(payload, dict) else {}
+    project_name = payload.get('project_name') if isinstance(payload, dict) else None
+    normalized_name = project_name or fallback_name or f"progetto_{int(time.time())}"
+    return {
+        'project_name': normalized_name,
+        'saved_at': (payload.get('saved_at') if isinstance(payload, dict) else None) or datetime.now().isoformat(),
+        'state': state,
+    }
+
+
+def project_signature_from_payload(payload):
+    return json.dumps(payload.get('state', {}), ensure_ascii=False, sort_keys=True)
+
+
+def register_saved_project(payload):
+    st.session_state['current_project_name'] = payload.get('project_name', '')
+    st.session_state['last_project_saved_at'] = payload.get('saved_at', '')
+    st.session_state['project_name_input'] = st.session_state['current_project_name']
+    st.session_state['last_project_signature'] = project_signature_from_payload(payload)
+
+
+def save_project_payload(payload):
+    normalized_payload = normalize_project_payload(payload)
+    with open(get_project_file(normalized_payload['project_name']), 'w', encoding='utf-8') as handle:
+        json.dump(normalized_payload, handle, ensure_ascii=False, indent=2)
+    register_saved_project(normalized_payload)
+    return normalized_payload
+
+
+def save_project(project_name):
+    payload = build_project_payload(project_name)
+    return save_project_payload(payload)
+
+
+def list_saved_projects():
+    projects = []
+    for filename in sorted(os.listdir(PROJECTS_DIR)):
+        if not filename.endswith('.json'):
+            continue
+        file_path = os.path.join(PROJECTS_DIR, filename)
+        try:
+            with open(file_path, 'r', encoding='utf-8') as handle:
+                payload = json.load(handle)
+            projects.append({
+                'label': payload.get('project_name') or filename[:-5],
+                'file_path': file_path,
+                'saved_at': payload.get('saved_at', ''),
+            })
+        except Exception:
+            projects.append({
+                'label': filename[:-5],
+                'file_path': file_path,
+                'saved_at': '',
+            })
+    return projects
+
+
+def load_project_payload(payload, fallback_name=None):
+    normalized_payload = normalize_project_payload(payload, fallback_name=fallback_name)
+    state = normalized_payload.get('state', {})
+    for key in PROJECT_STATE_KEYS:
+        if key in state:
+            st.session_state[key] = state[key]
+
+    loaded_portfolio_df = deserialize_dataframe(state.get('portfolio_df'))
+    if not loaded_portfolio_df.empty:
+        st.session_state['portfolio_df'] = process_portfolio_dataframe(
+            loaded_portfolio_df.drop(columns=['Display_Size', 'Risk_Score'], errors='ignore')
+        )
+    else:
+        st.session_state['portfolio_df'] = pd.DataFrame()
+    st.session_state['gap_documents'] = deserialize_gap_documents(state.get('gap_documents'))
+    st.session_state['vsme_disclosure_tables'] = deserialize_vsme_disclosure_tables(state.get('vsme_disclosure_tables'))
+    register_saved_project(normalized_payload)
+
+    for key in list(st.session_state.keys()):
+        if key.startswith('editor_vsme_table_') or key.startswith('show_pdf_'):
+            del st.session_state[key]
+
+    for answer_key, answer_data in st.session_state.get('gap_answers', {}).items():
+        if isinstance(answer_data, dict) and 'ans' in answer_data:
+            st.session_state[answer_key] = answer_data['ans']
+
+
+def load_project(project_option):
+    with open(project_option['file_path'], 'r', encoding='utf-8') as handle:
+        payload = json.load(handle)
+    load_project_payload(payload, fallback_name=project_option['label'])
+
+
+def import_project(uploaded_file):
+    raw_payload = json.loads(uploaded_file.getvalue().decode('utf-8'))
+    fallback_name = os.path.splitext(uploaded_file.name)[0]
+    normalized_payload = normalize_project_payload(raw_payload, fallback_name=fallback_name)
+    saved_payload = save_project_payload(normalized_payload)
+    load_project_payload(saved_payload, fallback_name=saved_payload['project_name'])
+    return saved_payload
+
+
+def autosave_project_if_needed(project_name):
+    if not st.session_state.get('project_autosave_enabled', True):
+        return False
+    normalized_name = sanitize_project_name(project_name)
+    if not normalized_name:
+        return False
+
+    payload = build_project_payload(project_name)
+    current_signature = project_signature_from_payload(payload)
+    if current_signature == st.session_state.get('last_project_signature'):
+        return False
+
+    save_project_payload(payload)
+    return True
+
+
+def delete_project(project_option):
+    if os.path.exists(project_option['file_path']):
+        os.remove(project_option['file_path'])
 
 def get_cache_file(ticker):
     """Restituisce il percorso del file cache per un ticker"""
@@ -142,6 +385,146 @@ def get_company_info(ticker):
 # --- COSTANTI VSME ---
 VSME_SCALE_OPTIONS = ["Yes", "Yes, but integration needed", "No, but planned", "No"]
 VSME_DEFAULT_FILE = "Gap Analysis Template_VSME_Standard_Tool v3.xlsx"
+VSME_DATA_COLLECTION_FILE = "Raccolta dati VSME_Template app.xlsx"
+VSME_DISCLOSURE_PILLARS = {
+    "GEN": ["B1", "B2", "C1", "C2"],
+    "E": ["B3", "B4", "B5", "B6", "B7", "C3", "C4"],
+    "S": ["B8", "B9", "B10", "C5", "C6", "C7"],
+    "G": ["B11", "C8", "C9"],
+}
+
+
+def _vsme_code_sort_key(code):
+    match = re.match(r'([BC])(\d+)', str(code).strip())
+    if not match:
+        return (99, str(code))
+    module_rank = 0 if match.group(1) == "B" else 1
+    return (module_rank, int(match.group(2)))
+
+
+def _extract_excel_preview(ws, start_row=1, end_row=None, max_cols=12, max_rows=None):
+    if end_row is None:
+        end_row = ws.max_row
+
+    row_values = []
+    for row_idx in range(start_row, end_row + 1):
+        values = [ws.cell(row_idx, col_idx).value for col_idx in range(1, max_cols + 1)]
+        if any(value not in (None, "") for value in values):
+            row_values.append(values)
+
+    if not row_values:
+        return pd.DataFrame()
+
+    max_non_empty_col = 0
+    for values in row_values:
+        for idx, value in enumerate(values, start=1):
+            if value not in (None, ""):
+                max_non_empty_col = max(max_non_empty_col, idx)
+
+    trimmed_rows = []
+    visible_rows = row_values if max_rows is None else row_values[:max_rows]
+    for values in visible_rows:
+        trimmed_rows.append([
+            "" if value is None else str(value).strip()
+            for value in values[:max_non_empty_col]
+        ])
+
+    column_labels = [chr(64 + idx) for idx in range(1, max_non_empty_col + 1)]
+    return pd.DataFrame(trimmed_rows, columns=column_labels)
+
+
+def _extract_disclosure_preview(ws, code, max_cols=12, max_rows=None):
+    code_starts = {}
+    for row_idx in range(1, min(ws.max_row, 200) + 1):
+        for col_idx in range(1, 4):
+            value = ws.cell(row_idx, col_idx).value
+            if not isinstance(value, str):
+                continue
+            match = re.match(r'^([BC]\d+)(?:\b|[\s\-.])', value.strip())
+            if match and match.group(1) not in code_starts:
+                code_starts[match.group(1)] = row_idx
+
+    if code in code_starts:
+        start_row = code_starts[code]
+        following_starts = [row for item_code, row in code_starts.items() if item_code != code and row > start_row]
+        end_row = min(following_starts) - 1 if following_starts else ws.max_row
+        return _extract_excel_preview(ws, start_row=start_row, end_row=end_row, max_cols=max_cols, max_rows=max_rows)
+
+    return _extract_excel_preview(ws, max_cols=max_cols, max_rows=max_rows)
+
+
+@st.cache_data
+def load_vsme_disclosure_reference(gap_file_path=VSME_DEFAULT_FILE, data_collection_path=VSME_DATA_COLLECTION_FILE):
+    try:
+        import openpyxl
+
+        gap_wb = openpyxl.load_workbook(gap_file_path, data_only=True)
+        data_wb = openpyxl.load_workbook(data_collection_path, data_only=True)
+
+        disclosure_catalog = {pillar: [] for pillar in VSME_DISCLOSURE_PILLARS}
+        section_names = {
+            "GEN": {"general information", "general information "},
+            "E": {"envi metrics", "environmental"},
+            "S": {"social metrics", "social"},
+            "G": {"governance metrics", "governance"},
+        }
+
+        sheet2 = gap_wb["Sheet2"]
+        for pillar, codes in VSME_DISCLOSURE_PILLARS.items():
+            code_details = {}
+            for row in sheet2.iter_rows(min_row=2, values_only=True):
+                _, _, section, disclosure_code, disclosure_title, item_type = row[:6]
+                if not section or not disclosure_code or str(disclosure_code).strip() not in codes:
+                    continue
+
+                normalized_section = re.sub(r'\s+', ' ', str(section).strip().lower())
+                if normalized_section not in section_names[pillar]:
+                    continue
+
+                code = str(disclosure_code).strip()
+                item = code_details.setdefault(code, {
+                    "code": code,
+                    "title": str(disclosure_title).strip(),
+                    "datapoints": 0,
+                })
+                if str(item_type).strip().lower() == "datapoint":
+                    item["datapoints"] += 1
+
+            for code in codes:
+                if code not in code_details:
+                    continue
+
+                sheet_names = []
+                for sheet_name in data_wb.sheetnames:
+                    if re.search(rf'^{re.escape(code)}(?:$|[-_])', sheet_name, flags=re.IGNORECASE):
+                        sheet_names.append(sheet_name)
+
+                tables = []
+                for sheet_name in sheet_names:
+                    preview = _extract_disclosure_preview(data_wb[sheet_name], code)
+                    if preview.empty:
+                        continue
+                    tables.append({
+                        "sheet_name": sheet_name,
+                        "data": preview,
+                    })
+
+                disclosure_catalog[pillar].append({
+                    "code": code,
+                    "title": code_details[code]["title"],
+                    "datapoints": code_details[code]["datapoints"],
+                    "sheet_names": sheet_names,
+                    "tables": tables,
+                })
+
+            disclosure_catalog[pillar] = sorted(
+                disclosure_catalog[pillar],
+                key=lambda item: _vsme_code_sort_key(item["code"]),
+            )
+
+        return disclosure_catalog, None
+    except Exception as exc:
+        return {pillar: [] for pillar in VSME_DISCLOSURE_PILLARS}, str(exc)
 
 def load_vsme_checklist_from_excel(file_path=VSME_DEFAULT_FILE):
     """Carica le domande del checklist VSME dal file Excel."""
@@ -240,6 +623,7 @@ st.session_state.setdefault('tax_portfolio', [])
 st.session_state.setdefault('cbam_portfolio', [])
 st.session_state.setdefault('gap_answers', {})
 st.session_state.setdefault('gap_documents', {})
+st.session_state.setdefault('vsme_disclosure_tables', {})
 st.session_state.setdefault('portfolio_df', pd.DataFrame())
 st.session_state.setdefault('impresa_area', 'UE')
 st.session_state.setdefault('sucursale_eu_200', 'No')
@@ -247,6 +631,10 @@ st.session_state.setdefault('hq_address', '')
 st.session_state.setdefault('hq_geocoded_address', '')
 st.session_state.setdefault('hq_lat', None)
 st.session_state.setdefault('hq_lon', None)
+st.session_state.setdefault('current_project_name', '')
+st.session_state.setdefault('last_project_saved_at', '')
+st.session_state.setdefault('last_project_signature', '')
+st.session_state.setdefault('project_autosave_enabled', True)
 
 if 'materiality_scores' not in st.session_state:
     st.session_state.materiality_scores = {
@@ -489,13 +877,14 @@ with st.sidebar:
         st.session_state.dipendenti = st.number_input("Numero dipendenti", value=st.session_state.dipendenti, step=10)
         st.session_state.revenue = st.number_input("Fatturato netto (€)", value=st.session_state.revenue, step=1000000)
 
-        ue_esrs = st.session_state.dipendenti > 1000 and st.session_state.revenue > 450000000
-        if ue_esrs:
-            st.session_state.status_normativo = "CSRD_GRANDE"
-            st.error("**Esito:** OBBLIGO ESRS (Grande Impresa UE: Dipendenti > 1.000 e fatturato netto > 450M €)", icon="⚖️")
-        else:
-            st.session_state.status_normativo = "VSME"
-            st.success("**Esito:** Rendicontazione VSME (dipendenti <= 1.000 e fatturato netto <= 450M €)")
+        if st.session_state.dipendenti > 0 and st.session_state.revenue > 0:
+            ue_esrs = st.session_state.dipendenti > 1000 and st.session_state.revenue > 450000000
+            if ue_esrs:
+                st.session_state.status_normativo = "CSRD_GRANDE"
+                st.error("**Esito:** OBBLIGO ESRS (Grande Impresa UE: Dipendenti > 1.000 e fatturato netto > 450M €)", icon="⚖️")
+            else:
+                st.session_state.status_normativo = "VSME"
+                st.success("**Esito:** Rendicontazione VSME (dipendenti <= 1.000 e fatturato netto <= 450M €)")
     
     # Campi condizionali per Extra-UE
     elif st.session_state.impresa_area == "Extra-UE":
@@ -507,33 +896,62 @@ with st.sidebar:
             horizontal=True
         )
 
-        extra_ue_esrs = st.session_state.revenue > 450000000 and sucursale_eu_200 == "Sì"
-        if extra_ue_esrs:
-            st.session_state.status_normativo = "CSRD_GRANDE"
-            st.error("**Esito:** OBBLIGO ESRS (Impresa Extra-UE: Fatturato netto in UE > 450M € e sucursale UE > 200 mln €)", icon="⚖️")
+        if st.session_state.revenue > 0:
+            extra_ue_esrs = st.session_state.revenue > 450000000 and sucursale_eu_200 == "Sì"
+            if extra_ue_esrs:
+                st.session_state.status_normativo = "CSRD_GRANDE"
+                st.error("**Esito:** OBBLIGO ESRS (Impresa Extra-UE: Fatturato netto in UE > 450M € e sucursale UE > 200 mln €)", icon="⚖️")
+            else:
+                st.session_state.status_normativo = "VSME"
+                st.success("**Esito:** Rendicontazione VSME (fatturato netto in UE <= 450M € oppure sucursale UE > 200 mln € = No)")
+    project_name_input = st.text_input(
+        "Salva progetto con nome",
+        value=st.session_state.get('current_project_name', '') or st.session_state.get('company_name', ''),
+        key="project_name_input"
+    )
+    effective_project_name = project_name_input.strip() or st.session_state.get('current_project_name', '').strip() or st.session_state.get('company_name', '').strip()
+    if st.button("Salva", use_container_width=True):
+        if not effective_project_name:
+            st.warning("Inserisci un nome prima di salvare.")
         else:
-            st.session_state.status_normativo = "VSME"
-            st.success("**Esito:** Rendicontazione VSME (fatturato netto in UE <= 450M € oppure sucursale UE > 200 mln € = No)")
-
-    st.divider()
-
-    st.subheader("AI Data Extraction (PDF)")
-    api_key = st.text_input("OpenAI API Key (Opzionale)", type="password", help="Inserisci la chiave segreta fornita dalla piattaforma OpenAI.")
-    uploaded_pdf = st.file_uploader("Carica Bilancio CEE", type="pdf")
-    if uploaded_pdf and st.button("Analizza con AI"):
-        with st.spinner("Elaborazione testo tramite AI in corso..."):
-            time.sleep(2)
-            st.session_state.totale_attivo = 32_000_000
-            st.session_state.revenue = 65_000_000
-            st.session_state.dipendenti = 310
-            st.session_state.opex = 40_000_000
-            st.session_state.capex_totale = 15_000_000
-            st.session_state.sector = "Utilities"
-            st.session_state.industry = "Renewable Electricity"
-            st.session_state.quotata = False
-            st.success("SIMULAZIONE AI COMPLETATA! Dati caricati.")
-            time.sleep(1)
+            payload = save_project(effective_project_name)
+            st.success(f"Progetto salvato: {payload['project_name']}")
             st.rerun()
+
+    project_options = list_saved_projects()
+    selected_project = st.selectbox(
+        "Progetti salvati",
+        options=project_options,
+        format_func=lambda item: f"{item['label']} ({item['saved_at'][:16].replace('T', ' ')})" if item and item.get('saved_at') else item['label'],
+        index=None,
+        placeholder="Seleziona un progetto salvato",
+        key="selected_saved_project_option"
+    )
+
+    c_avvia, c_cancella = st.columns(2)
+    with c_avvia:
+        if st.button("Avvia", use_container_width=True, disabled=selected_project is None):
+            load_project(selected_project)
+            st.success(f"Progetto avviato: {selected_project['label']}")
+            st.rerun()
+    with c_cancella:
+        if st.button("Cancella", use_container_width=True, disabled=selected_project is None):
+            deleted_label = selected_project['label']
+            delete_project(selected_project)
+            if st.session_state.get('current_project_name') == deleted_label:
+                st.session_state['current_project_name'] = ''
+                st.session_state['last_project_saved_at'] = ''
+                st.session_state['last_project_signature'] = ''
+            st.warning(f"Progetto eliminato: {deleted_label}")
+            st.rerun()
+
+    if st.session_state.get('current_project_name'):
+        saved_at = st.session_state.get('last_project_saved_at', '')
+        if saved_at:
+            st.caption(f"Progetto corrente: {st.session_state['current_project_name']} | salvato il {saved_at[:16].replace('T', ' ')}")
+        else:
+            st.caption(f"Progetto corrente: {st.session_state['current_project_name']}")
+
 
 # --- CORPO PRINCIPALE E TABS ---
 st.title("🌍 SMEs Reporting Support")
@@ -625,6 +1043,50 @@ def build_priority_actions(max_risk_score=None, top_risk_asset=None):
 
     return deduplicated_actions[:5]
 
+st.markdown(
+    """
+    <style>
+    div[data-testid="stVerticalBlock"] > div:has(.app-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"] {
+        font-size: 1rem;
+        font-weight: 600;
+        border-radius: 8px 8px 0 0;
+        padding: 0.5rem 0.95rem;
+    }
+    div[data-testid="stVerticalBlock"] > div:has(.app-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"]:nth-child(1) {
+        color: #1f4e79;
+        background: #eaf3ff;
+        border: 1px solid #bfd7f2;
+    }
+    div[data-testid="stVerticalBlock"] > div:has(.app-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]:nth-child(1) {
+        color: #0f3554;
+        background: #d6e9ff;
+        border-bottom-color: #d6e9ff;
+    }
+    div[data-testid="stVerticalBlock"] > div:has(.app-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"]:nth-child(2) {
+        color: #2f6b3b;
+        background: #e7f4ea;
+        border: 1px solid #b9d8c0;
+    }
+    div[data-testid="stVerticalBlock"] > div:has(.app-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]:nth-child(2) {
+        color: #214d2a;
+        background: #d7eddc;
+        border-bottom-color: #d7eddc;
+    }
+    div[data-testid="stVerticalBlock"] > div:has(.app-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"]:nth-child(3) {
+        color: #8a6a00;
+        background: #fff4d6;
+        border: 1px solid #ecd89b;
+    }
+    div[data-testid="stVerticalBlock"] > div:has(.app-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]:nth-child(3) {
+        color: #6c5200;
+        background: #f8e7b0;
+        border-bottom-color: #f8e7b0;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+st.markdown("<div class='app-main-tabs-marker'></div>", unsafe_allow_html=True)
 t_triage, t_rischi, t_down = st.tabs([
     "🔎 Diagnosi Azienda", "🗺️ Piano di Azione & Rischi", "📦 Deliverable"
 ])
@@ -685,6 +1147,128 @@ with t_triage:
                             }
                             st.success(f"✅ PDF caricato: {uploaded_file.name}")
 
+    def render_vsme_disclosure_tables(pillar_code, selected_mode, tab_context, disclosure_reference):
+        pillar_styles = {
+            "GEN": {
+                "tab_bg": "#eaf3ff",
+                "tab_bg_selected": "#d6e9ff",
+                "tab_border": "#bfd7f2",
+                "tab_text": "#1f4e79",
+                "tab_text_selected": "#0f3554",
+                "badge_bg": "#d9ecff",
+                "badge_text": "#1f4e79",
+            },
+            "E": {
+                "tab_bg": "#e7f4ea",
+                "tab_bg_selected": "#d7eddc",
+                "tab_border": "#b9d8c0",
+                "tab_text": "#2f6b3b",
+                "tab_text_selected": "#214d2a",
+                "badge_bg": "#dff1e3",
+                "badge_text": "#2f6b3b",
+            },
+            "S": {
+                "tab_bg": "#fde8e4",
+                "tab_bg_selected": "#f9d7cf",
+                "tab_border": "#f2c4ba",
+                "tab_text": "#a54b3f",
+                "tab_text_selected": "#7d362d",
+                "badge_bg": "#fbe0db",
+                "badge_text": "#a54b3f",
+            },
+            "G": {
+                "tab_bg": "#fff4d6",
+                "tab_bg_selected": "#f8e7b0",
+                "tab_border": "#ecd89b",
+                "tab_text": "#8a6a00",
+                "tab_text_selected": "#6c5200",
+                "badge_bg": "#fff0bf",
+                "badge_text": "#8a6a00",
+            },
+        }
+        style = pillar_styles.get(pillar_code, pillar_styles["GEN"])
+
+        if selected_mode == "absolute":
+            module_prefixes = ("B", "C")
+        elif selected_mode == "base":
+            module_prefixes = ("B",)
+        elif selected_mode == "comprehensive":
+            module_prefixes = ("B", "C")
+        else:
+            module_prefixes = ("C",)
+
+        disclosures = [
+            item for item in disclosure_reference.get(pillar_code, [])
+            if item["code"].startswith(module_prefixes)
+        ]
+
+        if not disclosures:
+            return
+
+        marker_class = f"vsme-subtabs-marker-{pillar_code}-{selected_mode}"
+
+        with tab_context:
+            css_rules = [
+                "font-size: 1rem;",
+                "font-weight: 600;",
+                f"color: {style['tab_text']} !important;",
+                f"background: {style['tab_bg']} !important;",
+                f"border: 1px solid {style['tab_border']} !important;",
+                "border-radius: 8px 8px 0 0;",
+                "padding: 0.45rem 0.9rem;",
+            ]
+            css_selected_rules = [
+                f"color: {style['tab_text_selected']} !important;",
+                f"background: {style['tab_bg_selected']} !important;",
+                f"border-bottom-color: {style['tab_bg_selected']} !important;",
+            ]
+
+            st.markdown(
+                f"""
+                <style>
+                div[data-testid="stVerticalBlock"] > div:has(.{marker_class}) ~ div div[data-baseweb="tab-list"] button[role="tab"] {{
+                    {' '.join(css_rules)}
+                }}
+                div[data-testid="stVerticalBlock"] > div:has(.{marker_class}) ~ div div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"] {{
+                    {' '.join(css_selected_rules)}
+                }}
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown(f"<div class='{marker_class}'></div>", unsafe_allow_html=True)
+            st.markdown(
+                "<p style='font-size:1rem; font-weight:600; margin-bottom:0.45rem; color:#1f1f1f;'>Struttura dati da compilare</p>",
+                unsafe_allow_html=True,
+            )
+            disclosure_tabs = st.tabs([f"{disclosure['code']}" for disclosure in disclosures])
+
+            for disclosure_tab, disclosure in zip(disclosure_tabs, disclosures):
+                with disclosure_tab:
+                    st.markdown(
+                        f"<p style='display:inline-block; font-size:1rem; font-weight:600; margin-bottom:0.45rem; padding:0.25rem 0.6rem; background:{style['badge_bg']}; color:{style['badge_text']}; border-radius:6px;'>{disclosure['code']} - {disclosure['title']}</p>",
+                        unsafe_allow_html=True,
+                    )
+
+                    if disclosure.get("tables"):
+                        for table in disclosure["tables"]:
+                            editor_storage_key = f"vsme_table_{pillar_code}_{selected_mode}_{disclosure['code']}_{table['sheet_name']}"
+                            if editor_storage_key not in st.session_state.vsme_disclosure_tables:
+                                st.session_state.vsme_disclosure_tables[editor_storage_key] = table["data"].copy()
+
+                            edited_df = st.data_editor(
+                                st.session_state.vsme_disclosure_tables[editor_storage_key],
+                                key=f"editor_{editor_storage_key}",
+                                width='stretch',
+                                hide_index=True,
+                                num_rows="dynamic",
+                            )
+                            st.session_state.vsme_disclosure_tables[editor_storage_key] = edited_df
+                    else:
+                        st.info("Nessuna tabella di raccolta dati trovata per questa disclosure nel file Excel caricato in workspace.")
+
+            st.divider()
+
     if status_normativo != "VSME":
         st.info("La diagnosi VSME e disponibile solo con esito: Rendicontazione VSME.")
     else:
@@ -702,10 +1286,13 @@ with t_triage:
         selected_mode = next((k for k, v in module_labels.items() if v == module_choice), "base")
 
         checklist_data, vsme_scale_options, err = load_vsme_checklist_from_excel()
+        disclosure_reference, disclosure_reference_err = load_vsme_disclosure_reference()
         if err:
             st.warning(f"WARNING: {err}. Uso le domande VSME predefinite.")
             checklist_data = None
             vsme_scale_options = VSME_SCALE_OPTIONS
+        if disclosure_reference_err:
+            st.warning(f"WARNING: impossibile leggere la raccolta dati VSME: {disclosure_reference_err}")
 
         # Se il caricamento è fallito o non ha dati, usa le domande predefinite.
         default_questions = {
@@ -851,11 +1438,81 @@ with t_triage:
             module_questions = questions_by_module[selected_mode]
             module_prefix = f"vsme_{selected_mode}"
 
+            st.markdown(
+                """
+                <style>
+                div[data-testid="stVerticalBlock"] > div:has(.vsme-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"] {
+                    font-size: 1rem;
+                    font-weight: 600;
+                    border-radius: 8px 8px 0 0;
+                    padding: 0.5rem 0.95rem;
+                }
+                div[data-testid="stVerticalBlock"] > div:has(.vsme-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"]:nth-child(1) {
+                    color: #1f4e79;
+                    background: #eaf3ff;
+                    border: 1px solid #bfd7f2;
+                }
+                div[data-testid="stVerticalBlock"] > div:has(.vsme-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]:nth-child(1) {
+                    color: #0f3554;
+                    background: #d6e9ff;
+                    border-bottom-color: #d6e9ff;
+                }
+                div[data-testid="stVerticalBlock"] > div:has(.vsme-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"]:nth-child(2) {
+                    color: #2f6b3b;
+                    background: #e7f4ea;
+                    border: 1px solid #b9d8c0;
+                }
+                div[data-testid="stVerticalBlock"] > div:has(.vsme-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]:nth-child(2) {
+                    color: #214d2a;
+                    background: #d7eddc;
+                    border-bottom-color: #d7eddc;
+                }
+                div[data-testid="stVerticalBlock"] > div:has(.vsme-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"]:nth-child(3) {
+                    color: #a54b3f;
+                    background: #fde8e4;
+                    border: 1px solid #f2c4ba;
+                }
+                div[data-testid="stVerticalBlock"] > div:has(.vsme-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]:nth-child(3) {
+                    color: #7d362d;
+                    background: #f9d7cf;
+                    border-bottom-color: #f9d7cf;
+                }
+                div[data-testid="stVerticalBlock"] > div:has(.vsme-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"]:nth-child(4) {
+                    color: #8a6a00;
+                    background: #fff4d6;
+                    border: 1px solid #ecd89b;
+                }
+                div[data-testid="stVerticalBlock"] > div:has(.vsme-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]:nth-child(4) {
+                    color: #6c5200;
+                    background: #f8e7b0;
+                    border-bottom-color: #f8e7b0;
+                }
+                div[data-testid="stVerticalBlock"] > div:has(.vsme-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"]:nth-child(5) {
+                    color: #5f4b8b;
+                    background: #efe7ff;
+                    border: 1px solid #d6c7f3;
+                }
+                div[data-testid="stVerticalBlock"] > div:has(.vsme-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]:nth-child(5) {
+                    color: #49366f;
+                    background: #e2d6fb;
+                    border-bottom-color: #e2d6fb;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown("<div class='vsme-main-tabs-marker'></div>", unsafe_allow_html=True)
             tab_gen, c_v_E, c_v_S, c_v_G, tab_summary = st.tabs(["Informazioni generali", "Ambiente", "Sociale", "Governance", "Sintesi diagnosi"])
             if module_questions["GEN"]:
+                render_vsme_disclosure_tables("GEN", selected_mode, tab_gen, disclosure_reference)
                 render_gap_list(module_questions["GEN"], "GEN", tab_gen, vsme_scale_options, module_prefix)
+            else:
+                render_vsme_disclosure_tables("GEN", selected_mode, tab_gen, disclosure_reference)
+            render_vsme_disclosure_tables("E", selected_mode, c_v_E, disclosure_reference)
             render_gap_list(module_questions["E"], "E", c_v_E, vsme_scale_options, module_prefix)
+            render_vsme_disclosure_tables("S", selected_mode, c_v_S, disclosure_reference)
             render_gap_list(module_questions["S"], "S", c_v_S, vsme_scale_options, module_prefix)
+            render_vsme_disclosure_tables("G", selected_mode, c_v_G, disclosure_reference)
             render_gap_list(module_questions["G"], "G", c_v_G, vsme_scale_options, module_prefix)
         if selected_mode == "absolute":
             module_payloads = [
@@ -981,6 +1638,50 @@ with t_rischi:
     st.caption("Percorso 2 di 3")
     st.subheader("Piano di azione & rischi")
     st.write("Qui trasformi la diagnosi in un piano operativo, aggiungi le sedi rilevanti e valuti il profilo di rischio climatico e di transizione.")
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stVerticalBlock"] > div:has(.risk-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"] {
+            font-size: 1rem;
+            font-weight: 600;
+            border-radius: 8px 8px 0 0;
+            padding: 0.5rem 0.95rem;
+        }
+        div[data-testid="stVerticalBlock"] > div:has(.risk-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"]:nth-child(1) {
+            color: #1f4e79;
+            background: #eaf3ff;
+            border: 1px solid #bfd7f2;
+        }
+        div[data-testid="stVerticalBlock"] > div:has(.risk-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]:nth-child(1) {
+            color: #0f3554;
+            background: #d6e9ff;
+            border-bottom-color: #d6e9ff;
+        }
+        div[data-testid="stVerticalBlock"] > div:has(.risk-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"]:nth-child(2) {
+            color: #2f6b3b;
+            background: #e7f4ea;
+            border: 1px solid #b9d8c0;
+        }
+        div[data-testid="stVerticalBlock"] > div:has(.risk-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]:nth-child(2) {
+            color: #214d2a;
+            background: #d7eddc;
+            border-bottom-color: #d7eddc;
+        }
+        div[data-testid="stVerticalBlock"] > div:has(.risk-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"]:nth-child(3) {
+            color: #8a6a00;
+            background: #fff4d6;
+            border: 1px solid #ecd89b;
+        }
+        div[data-testid="stVerticalBlock"] > div:has(.risk-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"]:nth-child(3) {
+            color: #6c5200;
+            background: #f8e7b0;
+            border-bottom-color: #f8e7b0;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div class='risk-tabs-marker'></div>", unsafe_allow_html=True)
     rt_fisico, rt_transizione, rt_credito = st.tabs(["🗺️ Piano & Mappa Asset", "🔄 Emissioni & Transizione", "💰 Stress Test Finanziario"])
     
     with rt_fisico:
@@ -1309,3 +2010,11 @@ with t_down:
             pdf.multi_cell(0, 8, txt=f"{idx}. {safe_action}")
 
         st.download_button("Scarica PDF", pdf.output(dest='S').encode('latin-1'), report_filenames[report_type])
+
+project_name_for_autosave = (
+    st.session_state.get('project_name_input', '').strip()
+    or st.session_state.get('current_project_name', '').strip()
+    or st.session_state.get('company_name', '').strip()
+)
+if project_name_for_autosave:
+    autosave_project_if_needed(project_name_for_autosave)

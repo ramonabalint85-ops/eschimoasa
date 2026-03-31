@@ -1173,7 +1173,6 @@ with t_rischi:
             with st.expander("Mostra dati tabellari"):
                 st.dataframe(df_render[['ID', 'Name', 'Operator', 'Address', 'Lat', 'Lon', 'Risk_Score']], use_container_width=True)
         else:
-            st.info("Nessun dato geolocalizzato trovato in automatico. Inserisci il file nella cartella o fai l'upload.")
 
     with rt_transizione:
         st.subheader("Calcolatore GHG (Fattori ISPRA/DEFRA)", help="Incrocia i dati di consumo grezzi (es. Metri cubi) con i 'Fattori di Emissione' approvati a livello ministeriale per dedurre in automatico l'impronta di carbonio (tCO2).")
