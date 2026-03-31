@@ -538,8 +538,95 @@ with st.sidebar:
 # --- CORPO PRINCIPALE E TABS ---
 st.title("🌍 SMEs Reporting Support")
 
+def summarize_gap_answers(module_prefixes=None):
+    rows = []
+    for key, data in st.session_state.get("gap_answers", {}).items():
+        if module_prefixes and not any(key.startswith(prefix) for prefix in module_prefixes):
+            continue
+
+        answer = str(data.get("ans", "")).strip()
+        question = re.sub(r'\s*\(\d+ datapoints\)$', '', str(data.get("q", "")).strip())
+        if not answer:
+            continue
+
+        normalized_answer = answer.lower()
+        if normalized_answer == "yes":
+            status = "ready"
+            severity = 0
+        elif "integration" in normalized_answer:
+            status = "partial"
+            severity = 1
+        elif normalized_answer.startswith("no"):
+            status = "missing"
+            severity = 2
+        else:
+            status = "partial"
+            severity = 1
+
+        rows.append({
+            "question": question,
+            "answer": answer,
+            "status": status,
+            "severity": severity,
+        })
+
+    total = len(rows)
+    ready = sum(1 for row in rows if row["status"] == "ready")
+    partial = sum(1 for row in rows if row["status"] == "partial")
+    missing = sum(1 for row in rows if row["status"] == "missing")
+    coverage = ((ready + partial) / total * 100) if total else 0.0
+
+    top_gaps = []
+    seen_questions = set()
+    for row in sorted(rows, key=lambda item: (-item["severity"], item["question"])):
+        if row["status"] == "ready" or row["question"] in seen_questions:
+            continue
+        top_gaps.append(row["question"])
+        seen_questions.add(row["question"])
+        if len(top_gaps) == 5:
+            break
+
+    return {
+        "total": total,
+        "ready": ready,
+        "partial": partial,
+        "missing": missing,
+        "coverage": coverage,
+        "top_gaps": top_gaps,
+    }
+
+def build_priority_actions(max_risk_score=None, top_risk_asset=None):
+    gap_summary = summarize_gap_answers(["vsme_base", "vsme_comprehensive"])
+    actions = []
+
+    if gap_summary["missing"] > 0:
+        actions.append("Recuperare i dati VSME assenti con priorita alta, partendo dalle domande senza evidenze.")
+    if gap_summary["partial"] > 0:
+        actions.append("Consolidare i dati parziali con fonti interne e documenti di supporto caricati in app.")
+    if not st.session_state.get("hq_address", "").strip():
+        actions.append("Inserire l'indirizzo sede per completare l'inquadramento geografico di base.")
+    if st.session_state.get("portfolio_df", pd.DataFrame()).empty:
+        actions.append("Caricare almeno una sede o un portfolio asset per rendere utile la lettura del rischio fisico.")
+    elif max_risk_score is not None and max_risk_score >= 70:
+        asset_label = top_risk_asset or "piu esposto"
+        actions.append(f"Approfondire l'asset {asset_label} con una verifica tecnica dedicata sul rischio fisico.")
+    if get_tot_emissions() == 0:
+        actions.append("Raccogliere i consumi energetici e logistici minimi per avviare una baseline GHG credibile.")
+    elif st.session_state.get("perc_red", 0) < 20:
+        actions.append("Definire un primo piano di riduzione emissioni per migliorare la resilienza allo scenario di transizione.")
+
+    deduplicated_actions = []
+    seen_actions = set()
+    for action in actions:
+        if action in seen_actions:
+            continue
+        deduplicated_actions.append(action)
+        seen_actions.add(action)
+
+    return deduplicated_actions[:5]
+
 t_triage, t_rischi, t_down = st.tabs([
-    "VSME Gap Analysis", "📊 Analisi Rischi & Mappe", "📥 Report & Export"
+    "🔎 Diagnosi Azienda", "🗺️ Piano di Azione & Rischi", "📦 Deliverable"
 ])
 
 # =====================================================================
@@ -547,6 +634,9 @@ t_triage, t_rischi, t_down = st.tabs([
 # =====================================================================
 with t_triage:
     status_normativo = st.session_state.get("status_normativo", "VSME")
+    st.caption("Percorso 1 di 3")
+    st.subheader("Diagnosi azienda")
+    st.write("Questa sezione serve a inquadrare il caso, verificare cosa si applica e identificare i gap documentali e informativi piu rilevanti.")
     
     def render_gap_list(questions, pillar_code, tab_context, scale_options, prefix="gap"):
         with tab_context:
@@ -596,7 +686,7 @@ with t_triage:
                             st.success(f"✅ PDF caricato: {uploaded_file.name}")
 
     if status_normativo != "VSME":
-        st.info("VSME Gap Analysis disponibile solo con esito: Rendicontazione VSME.")
+        st.info("La diagnosi VSME e disponibile solo con esito: Rendicontazione VSME.")
     else:
         module_labels = {
             "base": "Modulo Base",
@@ -604,7 +694,7 @@ with t_triage:
             "absolute": "Analisi VSME Assoluta",
         }
         module_choice = st.radio(
-            "Livello di Ambizione VSME:",
+            "Percorso di diagnosi VSME:",
             [module_labels["base"], module_labels["comprehensive"], module_labels["absolute"]],
             horizontal=True,
             key="vsme_module_choice",
@@ -656,9 +746,9 @@ with t_triage:
             }
 
         pillar_titles = {
-            "GEN": "General Information",
-            "E": "Environment",
-            "S": "Social",
+            "GEN": "Informazioni generali",
+            "E": "Ambiente",
+            "S": "Sociale",
             "G": "Governance",
         }
         response_colors = {
@@ -761,7 +851,7 @@ with t_triage:
             module_questions = questions_by_module[selected_mode]
             module_prefix = f"vsme_{selected_mode}"
 
-            tab_gen, c_v_E, c_v_S, c_v_G, tab_summary = st.tabs(["General Information", "Environment", "Social", "Governance", "Riepilogo"])
+            tab_gen, c_v_E, c_v_S, c_v_G, tab_summary = st.tabs(["Informazioni generali", "Ambiente", "Sociale", "Governance", "Sintesi diagnosi"])
             if module_questions["GEN"]:
                 render_gap_list(module_questions["GEN"], "GEN", tab_gen, vsme_scale_options, module_prefix)
             render_gap_list(module_questions["E"], "E", c_v_E, vsme_scale_options, module_prefix)
@@ -794,11 +884,45 @@ with t_triage:
         target_container = tab_summary if tab_summary is not None else st.container()
         with target_container:
             st.divider()
+            module_prefixes = [payload["prefix"] for payload in module_payloads]
+            gap_summary = summarize_gap_answers(module_prefixes)
+            completeness_label = f"{gap_summary['coverage']:.0f}%"
+            if gap_summary["coverage"] >= 80 and gap_summary["missing"] == 0:
+                readiness_label = "Alta"
+            elif gap_summary["coverage"] >= 50:
+                readiness_label = "Media"
+            else:
+                readiness_label = "Bassa"
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Esito", status_normativo)
+            m2.metric("Percorso", module_labels[selected_mode])
+            m3.metric("Preparazione", readiness_label)
+            m4.metric("Completezza dati", completeness_label)
+
+            c_diag1, c_diag2 = st.columns(2)
+            with c_diag1:
+                st.markdown("### Cosa si applica")
+                st.write(f"Esito automatico: {status_normativo}")
+                st.write(f"Domande valutate: {gap_summary['total']}")
+                st.write(f"Risposte pronte o parziali: {gap_summary['ready'] + gap_summary['partial']}")
+            with c_diag2:
+                st.markdown("### Cosa ti manca")
+                if gap_summary["top_gaps"]:
+                    for idx, question in enumerate(gap_summary["top_gaps"], start=1):
+                        st.write(f"{idx}. {question}")
+                else:
+                    st.write("Nessun gap prioritario rilevato al momento.")
+
+            st.markdown("### Prossime azioni consigliate")
+            for idx, action in enumerate(build_priority_actions(), start=1):
+                st.write(f"{idx}. {action}")
+
             if selected_mode == "absolute":
-                st.subheader("📊 Analisi VSME Assoluta")
+                st.subheader("📊 Vista aggregata VSME")
                 st.write("Confronto stacked per checklist aggregando Modulo Base e Modulo Completo.")
             else:
-                st.subheader(f"📊 Riepilogo VSME - {module_labels[selected_mode]}")
+                st.subheader(f"📊 Riepilogo diagnosi - {module_labels[selected_mode]}")
 
             df_stacked = results["stacked"]
             fig_stacked = px.bar(
@@ -818,7 +942,7 @@ with t_triage:
             )
             st.plotly_chart(fig_stacked, width='stretch', key=f"vsme_stacked_{selected_mode}")
 
-            st.subheader("📋 Tabella completa")
+            st.subheader("📋 Checklist completa")
             st.dataframe(results["all_details"], width='stretch', hide_index=True)
 
         if selected_mode in ["base", "comprehensive"]:
@@ -854,7 +978,10 @@ with t_triage:
 # TAB 2: ANALISI RISCHI (MAPPA FISICA, IPCC E NGFS)
 # =====================================================================
 with t_rischi:
-    rt_fisico, rt_transizione, rt_credito = st.tabs(["🛰️ Mappa Asset & Rischio Fisico", "🔄 Transizione (GHG)", "💰 Stress Test (NGFS)"])
+    st.caption("Percorso 2 di 3")
+    st.subheader("Piano di azione & rischi")
+    st.write("Qui trasformi la diagnosi in un piano operativo, aggiungi le sedi rilevanti e valuti il profilo di rischio climatico e di transizione.")
+    rt_fisico, rt_transizione, rt_credito = st.tabs(["🗺️ Piano & Mappa Asset", "🔄 Emissioni & Transizione", "💰 Stress Test Finanziario"])
     
     with rt_fisico:
         def ensure_hq_asset_on_map():
@@ -917,6 +1044,9 @@ with t_rischi:
         if not st.session_state.portfolio_df.empty:
             df_render = st.session_state.portfolio_df.copy()
 
+            np.random.seed(42)
+            base_risk = np.clip(100 - (df_render['Lat'] - 35) * 6 + np.random.randint(-10, 15, size=len(df_render)), 10, 100)
+
             st.subheader(
                 "🌍 Selezione Scenario Climatico (IPCC AR6)",
                 help="I 3 scenari (Shared Socioeconomic Pathways) elaborati dalle Nazioni Unite. Più lo scenario è fossile (SSP5), più il rischio fisico calcolato per l'impianto aumenta."
@@ -927,13 +1057,24 @@ with t_rischi:
                 horizontal=True,
                 label_visibility="collapsed"
             )
-            
-            np.random.seed(42) 
-            base_risk = np.clip(100 - (df_render['Lat'] - 35) * 6 + np.random.randint(-10, 15, size=len(df_render)), 10, 100)
+
             if "SSP1" in ipcc_scenario_mappa: risk_multiplier = 0.7
             elif "SSP2" in ipcc_scenario_mappa: risk_multiplier = 1.1
             else: risk_multiplier = 1.6
             df_render['Risk_Score'] = np.clip(base_risk * risk_multiplier, 10, 100).astype(int)
+
+            top_risk_row = df_render.sort_values("Risk_Score", ascending=False).iloc[0]
+            top_risk_name = top_risk_row.get("Name", "Asset")
+            top_risk_score = int(top_risk_row.get("Risk_Score", 0))
+
+            st.markdown("### Azioni prioritarie")
+            for idx, action in enumerate(build_priority_actions(top_risk_score, top_risk_name), start=1):
+                st.write(f"{idx}. {action}")
+
+            r1, r2, r3 = st.columns(3)
+            r1.metric("Asset mappati", len(df_render))
+            r2.metric("Asset piu esposto", top_risk_name)
+            r3.metric("Rischio massimo", f"{top_risk_score}/100")
 
             fig_portfolio = px.scatter_mapbox(
                 df_render, lat="Lat", lon="Lon", hover_name="Name",
@@ -1095,7 +1236,76 @@ with t_rischi:
 # TAB 5: DOWNLOAD
 # =====================================================================
 with t_down:
-    st.header("📥 Esportazione Dati")
-    if st.button("🪄 Genera Report Direzionale (PDF)", help="Prende tutti i dati dai vari componenti e compila un report PDF automatizzato prondo per l'Assemblea o l'invio all'Auditor."):
-        pdf = FPDF(); pdf.add_page(); pdf.set_font("Arial", 'B', 18); pdf.cell(200, 15, txt="ESG Report", ln=True, align='C')
-        st.download_button("Scarica PDF", pdf.output(dest='S').encode('latin-1'), "ESG_Report.pdf")
+    st.caption("Percorso 3 di 3")
+    st.subheader("Deliverable finale")
+    st.write("Questa sezione prepara un output leggibile per management, consulenza operativa o uso tecnico interno.")
+
+    report_type = st.radio(
+        "Formato deliverable",
+        ["Executive", "Operativo", "Tecnico"],
+        horizontal=True,
+        key="deliverable_type",
+    )
+
+    export_gap_summary = summarize_gap_answers(["vsme_base", "vsme_comprehensive"])
+    export_actions = build_priority_actions()
+    asset_count = 0 if st.session_state.portfolio_df.empty else len(st.session_state.portfolio_df)
+
+    st.markdown("### Anteprima deliverable")
+    preview_lines = []
+    if report_type == "Executive":
+        preview_lines = [
+            f"Esito azienda: {st.session_state.get('status_normativo', 'VSME')}",
+            f"Completezza dati stimata: {export_gap_summary['coverage']:.0f}%",
+            f"Gap prioritari aperti: {export_gap_summary['missing']}",
+            f"Asset o sedi considerate: {asset_count}",
+        ]
+    elif report_type == "Operativo":
+        preview_lines = [
+            f"Checklist valutate: {export_gap_summary['total']}",
+            f"Risposte pronte: {export_gap_summary['ready']}",
+            f"Risposte parziali: {export_gap_summary['partial']}",
+            f"Risposte assenti: {export_gap_summary['missing']}",
+        ]
+    else:
+        preview_lines = [
+            f"Sedi o asset geolocalizzati: {asset_count}",
+            f"Emissioni lorde stimate: {get_tot_emissions():,} tCO2",
+            f"Emissioni nette stimate: {st.session_state.em_final:,} tCO2",
+            f"Scenario policy multiplier: {st.session_state.policy_multiplier:.1f}x",
+        ]
+
+    for idx, line in enumerate(preview_lines, start=1):
+        st.write(f"{idx}. {line}")
+
+    st.markdown("### Azioni incluse nel report")
+    for idx, action in enumerate(export_actions, start=1):
+        st.write(f"{idx}. {action}")
+
+    if st.button("🪄 Genera deliverable PDF", help="Compila un report PDF sintetico a partire dai dati gia inseriti nell'app."):
+        report_titles = {
+            "Executive": "Executive ESG Brief",
+            "Operativo": "Operational ESG Action Plan",
+            "Tecnico": "Technical ESG Output",
+        }
+        report_filenames = {
+            "Executive": "Deliverable_Executive.pdf",
+            "Operativo": "Deliverable_Operativo.pdf",
+            "Tecnico": "Deliverable_Tecnico.pdf",
+        }
+
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 18)
+        pdf.cell(200, 15, txt=report_titles[report_type], ln=True, align='C')
+        pdf.set_font("Arial", size=11)
+        pdf.ln(4)
+        pdf.multi_cell(0, 8, txt=f"Esito: {st.session_state.get('status_normativo', 'VSME')}")
+        pdf.multi_cell(0, 8, txt=f"Completezza dati: {export_gap_summary['coverage']:.0f}%")
+        pdf.multi_cell(0, 8, txt=f"Asset o sedi considerate: {asset_count}")
+        pdf.ln(2)
+        for idx, action in enumerate(export_actions, start=1):
+            safe_action = action.encode('latin-1', 'ignore').decode('latin-1')
+            pdf.multi_cell(0, 8, txt=f"{idx}. {safe_action}")
+
+        st.download_button("Scarica PDF", pdf.output(dest='S').encode('latin-1'), report_filenames[report_type])
