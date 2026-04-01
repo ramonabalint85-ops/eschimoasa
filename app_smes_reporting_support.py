@@ -35,7 +35,9 @@ PROJECT_STATE_KEYS = [
     'perc_red', 'em_final', 'rata_prestito', 'policy_multiplier', 'capex_totale',
     'tax_portfolio', 'cbam_portfolio', 'gap_answers', 'impresa_area',
     'sucursale_eu_200', 'hq_address', 'hq_geocoded_address', 'hq_lat', 'hq_lon',
-    'status_normativo', 'vsme_module_choice', 'deliverable_type'
+    'status_normativo', 'vsme_module_choice', 'deliverable_type',
+    'b1_info_omesse', 'b1_info_omesse_quali', 'b1_perimetro',
+    'ragione_sociale', 'codice_nace_ateco', 'b1_paese_operazioni_asset_significativi'
 ]
 
 
@@ -47,6 +49,86 @@ def sanitize_project_name(project_name):
 
 def get_project_file(project_name):
     return os.path.join(PROJECTS_DIR, f"{sanitize_project_name(project_name)}.json")
+
+
+def format_unbounded_number(value):
+    if value in (None, ""):
+        return "0"
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if numeric_value.is_integer():
+        return f"{int(numeric_value):,}".replace(",", ".")
+
+    formatted = f"{numeric_value:,.2f}"
+    integer_part, decimal_part = formatted.split(".")
+    integer_part = integer_part.replace(",", ".")
+    decimal_part = decimal_part.rstrip('0')
+    if not decimal_part:
+        return integer_part
+    return f"{integer_part},{decimal_part}"
+
+
+def parse_unbounded_number(raw_value):
+    text = str(raw_value or "").strip()
+    if not text:
+        return 0
+
+    cleaned = re.sub(r"[€\s_]", "", text)
+    if "," in cleaned and "." in cleaned:
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        integer_part, decimal_part = cleaned.rsplit(",", 1)
+        if decimal_part.isdigit() and len(decimal_part) <= 2:
+            cleaned = f"{integer_part}.{decimal_part}"
+        else:
+            cleaned = cleaned.replace(",", "")
+
+    try:
+        numeric_value = float(cleaned)
+    except ValueError:
+        return None
+
+    if numeric_value.is_integer():
+        return int(numeric_value)
+    return numeric_value
+
+
+def sync_formatted_number_input(display_key, value_key, allow_float):
+    parsed_value = parse_unbounded_number(st.session_state.get(display_key, ""))
+    if parsed_value is None:
+        return
+
+    if not allow_float:
+        parsed_value = int(parsed_value)
+
+    st.session_state[value_key] = parsed_value
+    st.session_state[display_key] = format_unbounded_number(parsed_value)
+
+
+def unbounded_number_input(label, value_key, display_key, help=None, placeholder=None, allow_float=True):
+    current_value = st.session_state.get(value_key, 0)
+    formatted_value = format_unbounded_number(current_value)
+    if display_key not in st.session_state:
+        st.session_state[display_key] = "" if current_value == 0 else formatted_value
+    else:
+        parsed_display_value = parse_unbounded_number(st.session_state[display_key])
+        if parsed_display_value == current_value and st.session_state[display_key] != formatted_value:
+            st.session_state[display_key] = "" if current_value == 0 else formatted_value
+
+    st.text_input(
+        label,
+        key=display_key,
+        help=help,
+        placeholder=placeholder,
+        on_change=sync_formatted_number_input,
+        args=(display_key, value_key, allow_float),
+    )
+    return st.session_state.get(value_key, 0)
 
 
 def _to_json_safe(value):
@@ -384,6 +466,20 @@ def get_company_info(ticker):
 
 # --- COSTANTI VSME ---
 VSME_SCALE_OPTIONS = ["Sì", "Sì, ma con integrazione necessaria", "No, ma pianificato", "No"]
+VSME_PLOT_RESPONSE_ORDER = ["SI", "Si, ma necessita", "No ma pianificato", "No"]
+
+
+def to_vsme_plot_response_label(answer):
+    normalized = str(answer or "").strip().lower()
+    if normalized in {"sì", "si", "yes"}:
+        return "SI"
+    if "integrazione" in normalized or "integration" in normalized:
+        return "Si, ma necessita"
+    if normalized.startswith("no") and ("pianific" in normalized or "planned" in normalized):
+        return "No ma pianificato"
+    if normalized.startswith("no"):
+        return "No"
+    return str(answer or "").strip()
 VSME_DEFAULT_FILE = "Gap Analysis Template_VSME_Standard_Tool v3.xlsx"
 VSME_DATA_COLLECTION_FILE = "Raccolta dati VSME_Template app.xlsx"
 VSME_DISCLOSURE_PILLARS = {
@@ -532,6 +628,11 @@ def load_vsme_checklist_from_excel(file_path=VSME_DEFAULT_FILE):
         import openpyxl
         # Carica il workbook con data_only=True per ottenere valori calcolati, non formule
         wb = openpyxl.load_workbook(file_path, data_only=True)
+        excluded_questions = {
+            'hse action plan',
+            'hse policies',
+            'transition plan',
+        }
 
         def parse_datapoints(value):
             if value is None or value == "":
@@ -589,13 +690,15 @@ def load_vsme_checklist_from_excel(file_path=VSME_DEFAULT_FILE):
                         # Fallback su colonna C per compatibilita con eventuali template legacy.
                         datapoints_base = parse_datapoints(cell_c)
                     label_base = f"{cell_b.strip()} ({datapoints_base} datapoints)"
-                    checklist_data['base'][pillar].append(label_base)
+                    if cell_b.strip().lower() not in excluded_questions:
+                        checklist_data['base'][pillar].append(label_base)
                 
                 # Column H = documento comprehensive, Column J = datapoints comprehensive
                 if cell_h and isinstance(cell_h, str) and cell_h.strip():
                     datapoints_comp = parse_datapoints(cell_j)
                     label_comp = f"{cell_h.strip()} ({datapoints_comp} datapoints)"
-                    checklist_data['comprehensive'][pillar].append(label_comp)
+                    if cell_h.strip().lower() not in excluded_questions:
+                        checklist_data['comprehensive'][pillar].append(label_comp)
         
         return checklist_data, vsme_scale_options, None
     except Exception as e:
@@ -607,6 +710,8 @@ st.session_state.setdefault('opex', 0)
 st.session_state.setdefault('totale_attivo', 0)
 st.session_state.setdefault('dipendenti', 0)
 st.session_state.setdefault('company_name', '')
+st.session_state.setdefault('ragione_sociale', '')
+st.session_state.setdefault('codice_nace_ateco', '')
 st.session_state.setdefault('quotata', False)
 st.session_state.setdefault('sector', 'Industrials')
 st.session_state.setdefault('industry', 'Machinery')
@@ -635,6 +740,10 @@ st.session_state.setdefault('current_project_name', '')
 st.session_state.setdefault('last_project_saved_at', '')
 st.session_state.setdefault('last_project_signature', '')
 st.session_state.setdefault('project_autosave_enabled', True)
+st.session_state.setdefault('b1_info_omesse', 'No')
+st.session_state.setdefault('b1_info_omesse_quali', '')
+st.session_state.setdefault('b1_perimetro', 'Individuale')
+st.session_state.setdefault('b1_paese_operazioni_asset_significativi', '')
 
 if 'materiality_scores' not in st.session_state:
     st.session_state.materiality_scores = {
@@ -864,6 +973,8 @@ with st.sidebar:
     st.markdown("## Test di Assoggettabilità")
 
     st.session_state.company_name = st.text_input("Nome Azienda", value=st.session_state.get('company_name', ''))
+    st.session_state.ragione_sociale = st.text_input("Ragione sociale", value=st.session_state.get('ragione_sociale', ''))
+    st.session_state.codice_nace_ateco = st.text_input("Codice NACE/ATECO", value=st.session_state.get('codice_nace_ateco', ''))
 
     # Scelta UE o Extra-UE
     if 'impresa_area' not in st.session_state:
@@ -874,8 +985,19 @@ with st.sidebar:
     
     # Campi condizionali per UE
     if st.session_state.impresa_area == "UE":
-        st.session_state.dipendenti = st.number_input("Numero dipendenti", value=st.session_state.dipendenti, step=10)
-        st.session_state.revenue = st.number_input("Fatturato netto (€)", value=st.session_state.revenue, step=1000000)
+        st.session_state.dipendenti = unbounded_number_input(
+            "Numero dipendenti",
+            value_key="dipendenti",
+            display_key="dipendenti_input",
+            placeholder="0",
+            allow_float=False,
+        )
+        st.session_state.revenue = unbounded_number_input(
+            "Fatturato netto (€)",
+            value_key="revenue",
+            display_key="revenue_input",
+            placeholder="0",
+        )
 
         if st.session_state.dipendenti > 0 and st.session_state.revenue > 0:
             ue_esrs = st.session_state.dipendenti > 1000 and st.session_state.revenue > 450000000
@@ -888,7 +1010,12 @@ with st.sidebar:
     
     # Campi condizionali per Extra-UE
     elif st.session_state.impresa_area == "Extra-UE":
-        st.session_state.revenue = st.number_input("Fatturato netto in UE (€)", value=st.session_state.revenue, step=1000000)
+        st.session_state.revenue = unbounded_number_input(
+            "Fatturato netto in UE (€)",
+            value_key="revenue",
+            display_key="revenue_input",
+            placeholder="0",
+        )
         sucursale_eu_200 = st.radio(
             "Sucursale UE con fatturato netto > 200 mln €?",
             ["Sì", "No"],
@@ -956,6 +1083,205 @@ with st.sidebar:
 # --- CORPO PRINCIPALE E TABS ---
 st.title("🌍 Supporto alla Rendicontazione PMI")
 
+
+def clean_question_label(question):
+    return re.sub(r'\s*\(\d+ datapoints\)$', '', str(question or '').strip())
+
+
+def is_interview_management_question(question):
+    normalized_question = clean_question_label(question).lower()
+    return "interview management esg" in normalized_question
+
+
+def get_question_datapoints(question):
+    if is_interview_management_question(question):
+        return 4
+    if is_balance_economics_question(question):
+        return 4
+    if is_hr_reporting_question(question):
+        return 1
+    if is_governance_overview_question(question):
+        return 2
+    if is_environmental_certifications_question(question):
+        return 1
+    match = re.search(r'\((\d+) datapoints\)', str(question or ''))
+    return int(match.group(1)) if match else 0
+
+
+def answer_to_status(answer):
+    normalized_answer = str(answer or '').strip().lower()
+    if normalized_answer in {'sì', 'si', 'yes'}:
+        return 'ready', 0
+    if 'integrazione' in normalized_answer or 'integration' in normalized_answer:
+        return 'partial', 1
+    if normalized_answer.startswith('no'):
+        return 'missing', 2
+    return 'partial', 1
+
+
+def consolidated_table_completion_state():
+    tables = st.session_state.get('vsme_disclosure_tables', {})
+    df = tables.get('vsme_table_B1_consolidato')
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return 'missing'
+
+    normalized_df = df.where(pd.notna(df), '')
+    total_cells = normalized_df.shape[0] * normalized_df.shape[1]
+    if total_cells == 0:
+        return 'missing'
+
+    filled_cells = 0
+    for value in normalized_df.to_numpy().flatten():
+        if str(value).strip() != '':
+            filled_cells += 1
+
+    if filled_cells == 0:
+        return 'missing'
+    if filled_cells == total_cells:
+        return 'full'
+    return 'partial'
+
+
+def interview_management_auto_answer(selected_mode):
+    # Datapoint 1 (OPTION A/B) e datapoint 2-3 (informazioni omesse + perimetro)
+    # sono sempre disponibili in app. Datapoint 4 dipende dalla tabella Consolidato.
+    perimetro = st.session_state.get('b1_perimetro', 'Individuale')
+
+    if perimetro != 'Consolidato':
+        return 'Sì'
+
+    table_state = consolidated_table_completion_state()
+    if table_state == 'full':
+        return 'Sì'
+    if table_state == 'partial':
+        return 'Sì, ma con integrazione necessaria'
+    return None
+
+
+def is_balance_economics_question(question):
+    return "balance/economics" in clean_question_label(question).lower()
+
+
+def balance_economics_auto_answer():
+    # Datapoint 1: Ragione sociale (sidebar)
+    # Datapoint 2: Codice NACE/ATECO (sidebar)
+    # Datapoint 3: Totale degli attivi (tabella Dimensioni, riga 0)
+    # Datapoint 4: Fatturato (tabella Dimensioni, riga 1)
+    filled = 0
+
+    if str(st.session_state.get('ragione_sociale', '')).strip():
+        filled += 1
+    if str(st.session_state.get('codice_nace_ateco', '')).strip():
+        filled += 1
+
+    tables = st.session_state.get('vsme_disclosure_tables', {})
+    df = tables.get('vsme_table_B1_dimensioni')
+    if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+        if df.shape[0] > 0:
+            row0 = df.iloc[0]
+            if any(str(row0.get(col, '')).strip() for col in ['2024', '2025']):
+                filled += 1
+        if df.shape[0] > 1:
+            row1 = df.iloc[1]
+            if any(str(row1.get(col, '')).strip() for col in ['2024', '2025']):
+                filled += 1
+
+    if filled == 4:
+        return 'Sì'
+    if filled > 0:
+        return 'Sì, ma con integrazione necessaria'
+    return None
+
+
+def is_hr_reporting_question(question):
+    return "hr reporting" in clean_question_label(question).lower()
+
+
+def hr_reporting_auto_answer():
+    # Datapoint: Numero di dipendenti (tabella Dimensioni, riga 2)
+    tables = st.session_state.get('vsme_disclosure_tables', {})
+    df = tables.get('vsme_table_B1_dimensioni')
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty or df.shape[0] <= 2:
+        return None
+
+    row = df.iloc[2]
+    val_2024 = str(row.get('2024', '')).strip()
+    val_2025 = str(row.get('2025', '')).strip()
+
+    if val_2024 and val_2025:
+        return 'Sì'
+    if val_2024 or val_2025:
+        return 'Sì, ma con integrazione necessaria'
+    return None
+
+
+def is_governance_overview_question(question):
+    return "governance overview" in clean_question_label(question).lower()
+
+
+def governance_overview_auto_answer():
+    # Datapoint 1: Paese delle principali operazioni e localizzazione degli asset significativi
+    # Datapoint 2: Geolocalizzazione siti con coordinate GPS
+    country_filled = bool(str(st.session_state.get('b1_paese_operazioni_asset_significativi', '')).strip())
+
+    tables = st.session_state.get('vsme_disclosure_tables', {})
+    geo_df = tables.get('vsme_table_B1_geolocalizzazione_siti')
+    has_geo_full = False
+    has_geo_partial = False
+
+    if geo_df is not None and isinstance(geo_df, pd.DataFrame) and not geo_df.empty:
+        normalized_df = geo_df.where(pd.notna(geo_df), '')
+        for _, row in normalized_df.iterrows():
+            site_name = str(row.get('Sito (di proprietà, in locazione o gestito)', '')).strip()
+            gps_coords = str(row.get('Coordinate GPS', '')).strip()
+            if site_name and gps_coords:
+                has_geo_full = True
+                break
+            if site_name or gps_coords:
+                has_geo_partial = True
+
+    filled = int(country_filled) + int(has_geo_full)
+    if filled == 2:
+        return 'Sì'
+    if filled > 0 or has_geo_partial:
+        return 'Sì, ma con integrazione necessaria'
+    return None
+
+
+def is_environmental_certifications_question(question):
+    normalized = clean_question_label(question).lower()
+    return "environmental certifications" in normalized or "environmental certification" in normalized
+
+
+def environmental_certifications_auto_answer():
+    # Datapoint: presenza di almeno una certificazione/marchio sostenibilita con dati completi.
+    tables = st.session_state.get('vsme_disclosure_tables', {})
+    cert_df = tables.get('vsme_table_B1_certificazioni_sostenibilita')
+    if cert_df is None or not isinstance(cert_df, pd.DataFrame) or cert_df.empty:
+        return None
+
+    has_full = False
+    has_partial = False
+    normalized_df = cert_df.where(pd.notna(cert_df), '')
+    for _, row in normalized_df.iterrows():
+        description = str(row.get('Breve descrizione', '')).strip()
+        body = str(row.get('Organismo di certificazione', '')).strip()
+        date_value = str(row.get('Data', '')).strip()
+        score = str(row.get('Punteggio', '')).strip()
+        filled_count = sum(bool(v) for v in [description, body, date_value, score])
+        if filled_count == 4:
+            has_full = True
+            break
+        if filled_count > 0:
+            has_partial = True
+
+    if has_full:
+        return 'Sì'
+    if has_partial:
+        return 'Sì, ma con integrazione necessaria'
+    return None
+
+
 def summarize_gap_answers(module_prefixes=None):
     rows = []
     for key, data in st.session_state.get("gap_answers", {}).items():
@@ -963,40 +1289,36 @@ def summarize_gap_answers(module_prefixes=None):
             continue
 
         answer = str(data.get("ans", "")).strip()
-        question = re.sub(r'\s*\(\d+ datapoints\)$', '', str(data.get("q", "")).strip())
+        question_raw = str(data.get("q", "")).strip()
+        question = clean_question_label(question_raw)
         if not answer:
             continue
 
-        normalized_answer = answer.lower()
-        if normalized_answer == "yes":
-            status = "ready"
-            severity = 0
-        elif "integration" in normalized_answer:
-            status = "partial"
-            severity = 1
-        elif normalized_answer.startswith("no"):
-            status = "missing"
-            severity = 2
-        else:
-            status = "partial"
-            severity = 1
+        status, severity = answer_to_status(answer)
+        datapoints = get_question_datapoints(question_raw)
 
         rows.append({
             "question": question,
             "answer": answer,
             "status": status,
             "severity": severity,
+            "datapoints": datapoints,
         })
 
     total = len(rows)
     ready = sum(1 for row in rows if row["status"] == "ready")
     partial = sum(1 for row in rows if row["status"] == "partial")
     missing = sum(1 for row in rows if row["status"] == "missing")
-    coverage = ((ready + partial) / total * 100) if total else 0.0
+
+    total_datapoints = sum(row["datapoints"] for row in rows)
+    ready_datapoints = sum(row["datapoints"] for row in rows if row["status"] == "ready")
+    partial_datapoints = sum(row["datapoints"] for row in rows if row["status"] == "partial")
+    missing_datapoints = sum(row["datapoints"] for row in rows if row["status"] == "missing")
+    coverage = ((ready_datapoints + partial_datapoints) / total_datapoints * 100) if total_datapoints else 0.0
 
     top_gaps = []
     seen_questions = set()
-    for row in sorted(rows, key=lambda item: (-item["severity"], item["question"])):
+    for row in sorted(rows, key=lambda item: (-item["severity"], -item["datapoints"], item["question"])):
         if row["status"] == "ready" or row["question"] in seen_questions:
             continue
         top_gaps.append(row["question"])
@@ -1009,6 +1331,10 @@ def summarize_gap_answers(module_prefixes=None):
         "ready": ready,
         "partial": partial,
         "missing": missing,
+        "total_datapoints": total_datapoints,
+        "ready_datapoints": ready_datapoints,
+        "partial_datapoints": partial_datapoints,
+        "missing_datapoints": missing_datapoints,
         "coverage": coverage,
         "top_gaps": top_gaps,
     }
@@ -1102,20 +1428,82 @@ with t_triage:
     
     def render_gap_list(questions, pillar_code, tab_context, scale_options, prefix="gap"):
         with tab_context:
+            valid_answer_keys = {f"{prefix}_{pillar_code}_{i}" for i in range(len(questions))}
+            prefix_scope = f"{prefix}_{pillar_code}_"
+
+            for key in list(st.session_state.get("gap_answers", {}).keys()):
+                if key.startswith(prefix_scope) and key not in valid_answer_keys:
+                    del st.session_state.gap_answers[key]
+
+            for doc_key in list(st.session_state.get("gap_documents", {}).keys()):
+                if doc_key.startswith(prefix_scope) and doc_key not in valid_answer_keys:
+                    del st.session_state.gap_documents[doc_key]
+
+            for state_key in list(st.session_state.keys()):
+                if not state_key.startswith("show_pdf_"):
+                    continue
+                doc_key = state_key.replace("show_pdf_", "", 1)
+                if doc_key.startswith(prefix_scope) and doc_key not in valid_answer_keys:
+                    del st.session_state[state_key]
+
             for i, q in enumerate(questions):
                 # Creare colonne: selectbox + bottone PDF allineati
                 col_q, col_pdf = st.columns([4, 1], vertical_alignment="bottom")
                 
                 with col_q:
-                    val = st.selectbox(
-                        f"{i+1}. {q}",
-                        scale_options,
-                        key=f"{prefix}_{pillar_code}_{i}"
-                    )
-                    st.session_state.gap_answers[f"{prefix}_{pillar_code}_{i}"] = {
+                    answer_key = f"{prefix}_{pillar_code}_{i}"
+                    is_interview_row = is_interview_management_question(q)
+                    is_balance_row = is_balance_economics_question(q)
+                    is_hr_row = is_hr_reporting_question(q)
+                    is_governance_row = is_governance_overview_question(q)
+                    is_env_cert_row = is_environmental_certifications_question(q)
+                    is_auto_row = is_interview_row or is_balance_row or is_hr_row or is_governance_row or is_env_cert_row
+
+                    if is_auto_row:
+                        auto_datapoints = get_question_datapoints(q)
+                        question_label = f"{i+1}. {clean_question_label(q)} ({auto_datapoints} datapoints)"
+                        if is_interview_row:
+                            auto_answer = interview_management_auto_answer(selected_mode)
+                        elif is_balance_row:
+                            auto_answer = balance_economics_auto_answer()
+                        elif is_hr_row:
+                            auto_answer = hr_reporting_auto_answer()
+                        elif is_governance_row:
+                            auto_answer = governance_overview_auto_answer()
+                        else:
+                            auto_answer = environmental_certifications_auto_answer()
+
+                        if auto_answer is not None:
+                            st.session_state[answer_key] = auto_answer
+                            val = st.selectbox(
+                                question_label,
+                                [auto_answer],
+                                key=answer_key,
+                                disabled=True,
+                            )
+                        else:
+                            manual_options = ["No, ma pianificato", "No"]
+                            if st.session_state.get(answer_key) not in manual_options:
+                                st.session_state[answer_key] = manual_options[0]
+                            val = st.selectbox(
+                                question_label,
+                                manual_options,
+                                key=answer_key,
+                            )
+
+                        stored_question = f"{clean_question_label(q)} ({auto_datapoints} datapoints)"
+                    else:
+                        val = st.selectbox(
+                            f"{i+1}. {q}",
+                            scale_options,
+                            key=answer_key
+                        )
+                        stored_question = q
+
+                    st.session_state.gap_answers[answer_key] = {
                         "ans": val,
                         "pillar": pillar_code,
-                        "q": q,
+                        "q": stored_question,
                     }
                 
                 with col_pdf:
@@ -1250,22 +1638,252 @@ with t_triage:
                         unsafe_allow_html=True,
                     )
 
-                    if disclosure.get("tables"):
-                        for table in disclosure["tables"]:
-                            editor_storage_key = f"vsme_table_{pillar_code}_{selected_mode}_{disclosure['code']}_{table['sheet_name']}"
+                    b1_is_custom = disclosure['code'] == "B1"
+                    if b1_is_custom:
+                        st.markdown("#### Basis for preparation")
+                        st.radio(
+                            'Informazioni omesse in quanto ritenute riservate o sensibili?',
+                            ['Si', 'No'],
+                            key='b1_info_omesse',
+                            horizontal=True,
+                        )
+                        if st.session_state.b1_info_omesse == 'Si':
+                            st.text_input('Quali?', key='b1_info_omesse_quali')
+
+                        st.radio(
+                            'Perimetro rendicontazione',
+                            ['Individuale', 'Consolidato'],
+                            key='b1_perimetro',
+                            horizontal=True,
+                        )
+
+                        if st.session_state.b1_perimetro == 'Consolidato':
+                            editor_storage_key = "vsme_table_B1_consolidato"
+                            b1_default_columns = [
+                                'Tipo sede (es. sede legale, magazzino, stabilimento industriale, ecc.)',
+                                'N. siti',
+                                'Indirizzo',
+                                'Codice Postale',
+                                'Città',
+                                'Paese',
+                            ]
                             if editor_storage_key not in st.session_state.vsme_disclosure_tables:
-                                st.session_state.vsme_disclosure_tables[editor_storage_key] = table["data"].copy()
+                                st.session_state.vsme_disclosure_tables[editor_storage_key] = pd.DataFrame([
+                                    {col: '' for col in b1_default_columns}
+                                    for _ in range(2)
+                                ])
+                            else:
+                                existing_df = st.session_state.vsme_disclosure_tables[editor_storage_key].copy()
+                                for col in b1_default_columns:
+                                    if col not in existing_df.columns:
+                                        existing_df[col] = ''
+                                existing_df = existing_df[b1_default_columns]
+                                if existing_df.empty:
+                                    existing_df = pd.DataFrame([{col: '' for col in b1_default_columns} for _ in range(2)])
+                                existing_df = existing_df.where(pd.notna(existing_df), '')
+                                st.session_state.vsme_disclosure_tables[editor_storage_key] = existing_df
+
+                            st.markdown(
+                                """
+                                <style>
+                                div[data-testid="stDataEditor"] thead th,
+                                div[data-testid="stDataFrame"] thead th {
+                                    color: #000000 !important;
+                                }
+                                div[data-testid="stDataEditor"] [role="columnheader"] {
+                                    color: #000000 !important;
+                                }
+                                </style>
+                                """,
+                                unsafe_allow_html=True,
+                            )
 
                             edited_df = st.data_editor(
                                 st.session_state.vsme_disclosure_tables[editor_storage_key],
                                 key=f"editor_{editor_storage_key}",
                                 width='stretch',
                                 hide_index=True,
-                                num_rows="dynamic",
+                                num_rows="fixed",
                             )
+                            edited_df = edited_df.where(pd.notna(edited_df), '')
                             st.session_state.vsme_disclosure_tables[editor_storage_key] = edited_df
-                    else:
-                        st.info("Nessuna tabella di raccolta dati trovata per questa disclosure nel file Excel caricato in workspace.")
+
+                            if st.button("+ Aggiungi riga", key="b1_add_row_btn"):
+                                table_df = st.session_state.vsme_disclosure_tables[editor_storage_key].copy()
+                                new_row = pd.DataFrame([{col: '' for col in b1_default_columns}])
+                                table_df = pd.concat([table_df, new_row], ignore_index=True)
+                                st.session_state.vsme_disclosure_tables[editor_storage_key] = table_df
+                                st.rerun()
+
+                        dimensioni_storage_key = "vsme_table_B1_dimensioni"
+                        if dimensioni_storage_key not in st.session_state.vsme_disclosure_tables:
+                            st.session_state.vsme_disclosure_tables[dimensioni_storage_key] = pd.DataFrame([
+                                {"Dimensione": "Totale degli attivi", "2024": "", "2025": ""},
+                                {"Dimensione": "Fatturato", "2024": "", "2025": ""},
+                                {"Dimensione": "Numero di dipendenti", "2024": "", "2025": ""},
+                            ])
+                        else:
+                            dim_df = st.session_state.vsme_disclosure_tables[dimensioni_storage_key].copy()
+                            expected_columns = ["Dimensione", "2024", "2025"]
+                            for col in expected_columns:
+                                if col not in dim_df.columns:
+                                    dim_df[col] = ""
+                            dim_df = dim_df[expected_columns].where(pd.notna(dim_df[expected_columns]), '')
+                            if dim_df.empty:
+                                dim_df = pd.DataFrame([
+                                    {"Dimensione": "Totale degli attivi", "2024": "", "2025": ""},
+                                    {"Dimensione": "Fatturato", "2024": "", "2025": ""},
+                                    {"Dimensione": "Numero di dipendenti", "2024": "", "2025": ""},
+                                ])
+                            st.session_state.vsme_disclosure_tables[dimensioni_storage_key] = dim_df
+
+                        st.markdown("##### Dimensioni")
+                        dim_edited_df = st.data_editor(
+                            st.session_state.vsme_disclosure_tables[dimensioni_storage_key],
+                            key=f"editor_{dimensioni_storage_key}",
+                            width='stretch',
+                            hide_index=True,
+                            num_rows="fixed",
+                            disabled=["Dimensione"],
+                        )
+                        dim_edited_df = dim_edited_df.where(pd.notna(dim_edited_df), '')
+                        st.session_state.vsme_disclosure_tables[dimensioni_storage_key] = dim_edited_df
+
+                        st.markdown("##### Paese")
+                        st.caption("delle principali operazioni e localizzazione degli asset significativi")
+                        st.text_input(
+                            "Paese",
+                            key='b1_paese_operazioni_asset_significativi',
+                            label_visibility="collapsed",
+                            placeholder="Inserisci il paese"
+                        )
+
+                        geoloc_storage_key = "vsme_table_B1_geolocalizzazione_siti"
+                        geoloc_columns = ["Sito (di proprietà, in locazione o gestito)", "Coordinate GPS"]
+                        if geoloc_storage_key not in st.session_state.vsme_disclosure_tables:
+                            st.session_state.vsme_disclosure_tables[geoloc_storage_key] = pd.DataFrame([
+                                {col: '' for col in geoloc_columns}
+                            ])
+                        else:
+                            geo_df = st.session_state.vsme_disclosure_tables[geoloc_storage_key].copy()
+                            legacy_site_col = "Sito (owned, leased or managed)"
+                            new_site_col = "Sito (di proprietà, in locazione o gestito)"
+                            if legacy_site_col in geo_df.columns and new_site_col not in geo_df.columns:
+                                geo_df[new_site_col] = geo_df[legacy_site_col]
+                            for col in geoloc_columns:
+                                if col not in geo_df.columns:
+                                    geo_df[col] = ''
+                            geo_df = geo_df[geoloc_columns].where(pd.notna(geo_df[geoloc_columns]), '')
+                            if geo_df.empty:
+                                geo_df = pd.DataFrame([{col: '' for col in geoloc_columns}])
+                            st.session_state.vsme_disclosure_tables[geoloc_storage_key] = geo_df
+
+                        if st.session_state.b1_perimetro == 'Consolidato':
+                            consolidato_df = st.session_state.vsme_disclosure_tables.get("vsme_table_B1_consolidato")
+                            if consolidato_df is not None and isinstance(consolidato_df, pd.DataFrame) and not consolidato_df.empty:
+                                site_col = 'Tipo sede (es. sede legale, magazzino, stabilimento industriale, ecc.)'
+                                consolidato_sites = []
+                                if site_col in consolidato_df.columns:
+                                    for value in consolidato_df[site_col].tolist():
+                                        site_name = str(value or '').strip()
+                                        if site_name:
+                                            consolidato_sites.append(site_name)
+
+                                if consolidato_sites:
+                                    current_geo = st.session_state.vsme_disclosure_tables[geoloc_storage_key].copy()
+                                    existing_names = {
+                                        str(v).strip().lower()
+                                        for v in current_geo["Sito (di proprietà, in locazione o gestito)"].tolist()
+                                        if str(v).strip()
+                                    }
+                                    sites_to_insert = [
+                                        site for site in consolidato_sites
+                                        if site.lower() not in existing_names
+                                    ]
+                                    site_col = "Sito (di proprietà, in locazione o gestito)"
+                                    for idx, row in current_geo.iterrows():
+                                        if not sites_to_insert:
+                                            break
+                                        current_value = str(row.get(site_col, '')).strip()
+                                        if not current_value:
+                                            current_geo.at[idx, site_col] = sites_to_insert.pop(0)
+                                    if sites_to_insert:
+                                        rows_to_add = [
+                                            {site_col: site, "Coordinate GPS": ''}
+                                            for site in sites_to_insert
+                                        ]
+                                        current_geo = pd.concat([current_geo, pd.DataFrame(rows_to_add)], ignore_index=True)
+                                    st.session_state.vsme_disclosure_tables[geoloc_storage_key] = current_geo
+
+                        st.markdown("##### Geolocalizzazione siti")
+                        geo_edited_df = st.data_editor(
+                            st.session_state.vsme_disclosure_tables[geoloc_storage_key],
+                            key=f"editor_{geoloc_storage_key}",
+                            width='stretch',
+                            hide_index=True,
+                            num_rows="fixed",
+                        )
+                        geo_edited_df = geo_edited_df.where(pd.notna(geo_edited_df), '')
+                        st.session_state.vsme_disclosure_tables[geoloc_storage_key] = geo_edited_df
+
+                        if st.button("+ Aggiungi riga sito", key="b1_add_row_geoloc_btn"):
+                            geo_table_df = st.session_state.vsme_disclosure_tables[geoloc_storage_key].copy()
+                            new_geo_row = pd.DataFrame([{col: '' for col in geoloc_columns}])
+                            geo_table_df = pd.concat([geo_table_df, new_geo_row], ignore_index=True)
+                            st.session_state.vsme_disclosure_tables[geoloc_storage_key] = geo_table_df
+                            st.rerun()
+
+                        cert_storage_key = "vsme_table_B1_certificazioni_sostenibilita"
+                        cert_columns = ["Breve descrizione", "Organismo di certificazione", "Data", "Punteggio"]
+                        if cert_storage_key not in st.session_state.vsme_disclosure_tables:
+                            st.session_state.vsme_disclosure_tables[cert_storage_key] = pd.DataFrame([
+                                {col: '' for col in cert_columns}
+                            ])
+                        else:
+                            cert_df = st.session_state.vsme_disclosure_tables[cert_storage_key].copy()
+                            for col in cert_columns:
+                                if col not in cert_df.columns:
+                                    cert_df[col] = ''
+                            cert_df = cert_df[cert_columns].where(pd.notna(cert_df[cert_columns]), '')
+                            if cert_df.empty:
+                                cert_df = pd.DataFrame([{col: '' for col in cert_columns}])
+                            st.session_state.vsme_disclosure_tables[cert_storage_key] = cert_df
+
+                        st.markdown("##### Certificazioni o marchi relativi alla sostenibilità")
+                        cert_edited_df = st.data_editor(
+                            st.session_state.vsme_disclosure_tables[cert_storage_key],
+                            key=f"editor_{cert_storage_key}",
+                            width='stretch',
+                            hide_index=True,
+                            num_rows="fixed",
+                        )
+                        cert_edited_df = cert_edited_df.where(pd.notna(cert_edited_df), '')
+                        st.session_state.vsme_disclosure_tables[cert_storage_key] = cert_edited_df
+
+                        if st.button("+ Aggiungi riga certificazione", key="b1_add_row_cert_btn"):
+                            cert_table_df = st.session_state.vsme_disclosure_tables[cert_storage_key].copy()
+                            new_cert_row = pd.DataFrame([{col: '' for col in cert_columns}])
+                            cert_table_df = pd.concat([cert_table_df, new_cert_row], ignore_index=True)
+                            st.session_state.vsme_disclosure_tables[cert_storage_key] = cert_table_df
+                            st.rerun()
+
+                    if not b1_is_custom:
+                        if disclosure.get("tables"):
+                            for table in disclosure["tables"]:
+                                editor_storage_key = f"vsme_table_{pillar_code}_{selected_mode}_{disclosure['code']}_{table['sheet_name']}"
+                                if editor_storage_key not in st.session_state.vsme_disclosure_tables:
+                                    st.session_state.vsme_disclosure_tables[editor_storage_key] = table["data"].copy()
+
+                                edited_df = st.data_editor(
+                                    st.session_state.vsme_disclosure_tables[editor_storage_key],
+                                    key=f"editor_{editor_storage_key}",
+                                    width='stretch',
+                                    hide_index=True,
+                                    num_rows="dynamic",
+                                )
+                                st.session_state.vsme_disclosure_tables[editor_storage_key] = edited_df
+                        else:
+                            st.info("Nessuna tabella di raccolta dati trovata per questa disclosure nel file Excel caricato in workspace.")
 
             st.divider()
 
@@ -1339,14 +1957,14 @@ with t_triage:
             "G": "Governance",
         }
         response_colors = {
-            "Sì": "#2ecc71",
-            "Sì, ma con integrazione necessaria": "#f39c12",
-            "No, ma pianificato": "#3498db",
+            "SI": "#2ecc71",
+            "Si, ma necessita": "#f39c12",
+            "No ma pianificato": "#3498db",
             "No": "#e74c3c",
         }
         default_palette = ["#2ecc71", "#f39c12", "#3498db", "#e74c3c", "#9b59b6", "#16a085"]
         for idx, option in enumerate(vsme_scale_options):
-            response_colors.setdefault(option, default_palette[idx % len(default_palette)])
+            response_colors.setdefault(to_vsme_plot_response_label(option), default_palette[idx % len(default_palette)])
 
         def build_vsme_results(module_payloads, scale_options):
             valid_keys = set()
@@ -1362,28 +1980,45 @@ with t_triage:
                             valid_keys.add(key)
                             key_to_module[key] = module_name
             
-            pillar_totals = {pillar: {option: 0 for option in scale_options} for pillar in pillar_titles}
+            ordered_options = [label for label in VSME_PLOT_RESPONSE_ORDER if label in response_colors]
+            pillar_totals = {pillar: {option: 0 for option in ordered_options} for pillar in pillar_titles}
             pillar_details = {pillar: [] for pillar in pillar_titles}
             for key, data in st.session_state.gap_answers.items():
                 if key not in valid_keys:
                     continue
                 pillar = data.get("pillar")
                 answer = data.get("ans")
+                answer_label = to_vsme_plot_response_label(answer)
                 question = data.get("q", "")
                 module_name = key_to_module.get(key, "")
-                match = re.search(r'\((\d+) datapoints\)', question)
-                datapoints = int(match.group(1)) if match else 0
-                clean_question = re.sub(r'\s*\(\d+ datapoints\)$', '', question).strip()
-                if pillar in pillar_totals and answer in pillar_totals[pillar]:
-                    pillar_totals[pillar][answer] += datapoints
+                datapoints = get_question_datapoints(question)
+                clean_question = clean_question_label(question)
+                if pillar in pillar_totals and answer_label in pillar_totals[pillar]:
+                    pillar_totals[pillar][answer_label] += datapoints
                 if pillar in pillar_details:
                     pillar_details[pillar].append({
                         "Modulo": module_name,
                         "Checklist": pillar_titles.get(pillar, pillar),
                         "Domanda": clean_question,
-                        "Risposta": answer,
+                        "Risposta": answer_label,
                         "Datapoints": datapoints,
                     })
+
+            global_total_datapoints = sum(sum(pillar_totals[p].values()) for p in pillar_titles)
+            response_totals = {option: 0 for option in ordered_options}
+            for pillar in pillar_titles:
+                for option in ordered_options:
+                    response_totals[option] += pillar_totals[pillar][option]
+
+            response_distribution_rows = []
+            for option in ordered_options:
+                datapoints = response_totals[option]
+                pct_dataset = (datapoints / global_total_datapoints * 100) if global_total_datapoints else 0.0
+                response_distribution_rows.append({
+                    "Risposta": option,
+                    "Datapoints": datapoints,
+                    "% sul totale dataset": pct_dataset,
+                })
 
             per_pillar_summary = {}
             per_pillar_details = {}
@@ -1393,14 +2028,16 @@ with t_triage:
                 total_datapoints = sum(pillar_totals[pillar].values())
                 summary_rows = []
                 detail_rows = []
-                for option in scale_options:
+                for option in ordered_options:
                     datapoints = pillar_totals[pillar][option]
                     pct = (datapoints / total_datapoints * 100) if total_datapoints else 0.0
+                    global_pct = (datapoints / global_total_datapoints * 100) if global_total_datapoints else 0.0
                     summary_row = {
                         "Checklist": title,
                         "Risposta": option,
                         "Datapoints": datapoints,
                         "% sul totale checklist": pct,
+                        "% sul totale dataset": global_pct,
                     }
                     summary_rows.append(summary_row)
                     stacked_rows.append(summary_row)
@@ -1409,28 +2046,26 @@ with t_triage:
                     detail_row["% sul totale checklist"] = (
                         detail_row["Datapoints"] / total_datapoints * 100 if total_datapoints else 0.0
                     )
+                    detail_row["% sul totale dataset"] = (
+                        detail_row["Datapoints"] / global_total_datapoints * 100 if global_total_datapoints else 0.0
+                    )
                     detail_rows.append(detail_row)
                     all_rows.append(detail_row)
                 df_summary = pd.DataFrame(summary_rows)
-                df_summary["% sul totale checklist"] = df_summary["% sul totale checklist"].apply(lambda x: f"{x:.2f}%")
                 df_details = pd.DataFrame(detail_rows)
-                if len(df_details) > 0:
-                    df_details["% sul totale checklist"] = df_details["% sul totale checklist"].apply(lambda x: f"{x:.2f}%")
                 per_pillar_summary[pillar] = df_summary
                 per_pillar_details[pillar] = df_details
 
             df_stacked = pd.DataFrame(stacked_rows)
-            if len(df_stacked) > 0:
-                df_stacked["% sul totale checklist"] = df_stacked["% sul totale checklist"].apply(lambda x: f"{x:.2f}%")
             df_all_details = pd.DataFrame(all_rows)
-            if len(df_all_details) > 0:
-                df_all_details["% sul totale checklist"] = df_all_details["% sul totale checklist"].apply(lambda x: f"{x:.2f}%")
+            df_response_distribution = pd.DataFrame(response_distribution_rows)
             
             return {
                 "summary": per_pillar_summary,
                 "details": per_pillar_details,
                 "stacked": df_stacked,
                 "all_details": df_all_details,
+                "response_distribution": df_response_distribution,
             }
 
         tab_summary = None
@@ -1544,7 +2179,7 @@ with t_triage:
             module_prefixes = [payload["prefix"] for payload in module_payloads]
             gap_summary = summarize_gap_answers(module_prefixes)
             completeness_label = f"{gap_summary['coverage']:.0f}%"
-            if gap_summary["coverage"] >= 80 and gap_summary["missing"] == 0:
+            if gap_summary["coverage"] >= 80 and gap_summary["missing_datapoints"] == 0:
                 readiness_label = "Alta"
             elif gap_summary["coverage"] >= 50:
                 readiness_label = "Media"
@@ -1581,26 +2216,59 @@ with t_triage:
             else:
                 st.subheader(f"📊 Riepilogo diagnosi - {module_labels[selected_mode]}")
 
-            df_stacked = results["stacked"]
-            fig_stacked = px.bar(
-                df_stacked,
-                x="Checklist",
-                y="% sul totale checklist",
+            df_distribution = results["response_distribution"].copy()
+            fig_distribution = px.bar(
+                df_distribution,
+                x="Risposta",
+                y="% sul totale dataset",
                 color="Risposta",
-                barmode="stack",
-                text=df_stacked["% sul totale checklist"],
+                text=df_distribution["% sul totale dataset"].apply(lambda x: f"{x:.2f}%"),
                 color_discrete_map=response_colors,
-                category_orders={"Checklist": list(pillar_titles.values())},
+                category_orders={"Risposta": VSME_PLOT_RESPONSE_ORDER},
             )
-            fig_stacked.update_layout(
-                yaxis_title="Percentuale sul totale datapoints",
-                xaxis_title="Checklist",
+            fig_distribution.update_layout(
+                title="Percentuale sul totale dataset",
+                yaxis_title="Percentuale sul totale dataset",
+                xaxis_title="Risposta",
                 legend_title="Risposta",
+                showlegend=False,
             )
-            st.plotly_chart(fig_stacked, width='stretch', key=f"vsme_stacked_{selected_mode}")
+            st.plotly_chart(fig_distribution, width='stretch', key=f"vsme_distribution_{selected_mode}")
+
+            table_distribution = df_distribution.copy()
+            if len(table_distribution) > 0:
+                raw_percentages = table_distribution["% sul totale dataset"].fillna(0).astype(float).tolist()
+                rounded_percentages = [round(value, 2) for value in raw_percentages]
+                total_datapoints_distribution = float(table_distribution["Datapoints"].fillna(0).sum())
+
+                # Con datapoints presenti, forza la somma visibile a 100% correggendo il delta di arrotondamento.
+                if total_datapoints_distribution > 0:
+                    rounding_delta = round(100.0 - sum(rounded_percentages), 2)
+                    if abs(rounding_delta) >= 0.01:
+                        pivot_idx = max(range(len(raw_percentages)), key=lambda idx: raw_percentages[idx])
+                        rounded_percentages[pivot_idx] = round(rounded_percentages[pivot_idx] + rounding_delta, 2)
+
+                table_distribution["% sul totale dataset"] = [f"{max(value, 0.0):.2f}%" for value in rounded_percentages]
+
+            st.dataframe(table_distribution, width='stretch', hide_index=True)
 
             st.subheader("📋 Checklist completa")
-            st.dataframe(results["all_details"], width='stretch', hide_index=True)
+            all_details_table = results["all_details"].copy()
+            if len(all_details_table) > 0:
+                all_details_table["% sul totale checklist"] = all_details_table["% sul totale checklist"].apply(lambda x: f"{x:.2f}%")
+                details_columns_order = [
+                    "Modulo",
+                    "Checklist",
+                    "Domanda",
+                    "Datapoints",
+                    "% sul totale checklist",
+                    "Risposta",
+                ]
+                existing_order = [col for col in details_columns_order if col in all_details_table.columns]
+                remaining_cols = [col for col in all_details_table.columns if col not in existing_order]
+                remaining_cols = [col for col in remaining_cols if col != "% sul totale dataset"]
+                all_details_table = all_details_table[existing_order + remaining_cols]
+            st.dataframe(all_details_table, width='stretch', hide_index=True)
 
         if selected_mode in ["base", "comprehensive"]:
             tab_mapping = {
@@ -1620,16 +2288,31 @@ with t_triage:
                         x="Risposta",
                         y="% sul totale checklist",
                         color="Risposta",
-                        text=df_summary["% sul totale checklist"],
+                        text=df_summary["% sul totale checklist"].apply(lambda x: f"{x:.2f}%"),
                         color_discrete_map=response_colors,
                     )
                     fig.update_layout(
                         showlegend=False,
-                        yaxis_title="Percentuale sul totale datapoints",
+                        yaxis_title="Percentuale sul totale checklist",
                         xaxis_title="Risposta",
                     )
                     st.plotly_chart(fig, width='stretch', key=f"vsme_bar_{selected_mode}_{pillar}")
-                    st.dataframe(df_details, width='stretch', hide_index=True)
+                    details_table = df_details.copy()
+                    if len(details_table) > 0:
+                        details_table["% sul totale checklist"] = details_table["% sul totale checklist"].apply(lambda x: f"{x:.2f}%")
+                        details_columns_order = [
+                            "Modulo",
+                            "Checklist",
+                            "Domanda",
+                            "Datapoints",
+                            "% sul totale checklist",
+                            "Risposta",
+                        ]
+                        existing_order = [col for col in details_columns_order if col in details_table.columns]
+                        remaining_cols = [col for col in details_table.columns if col not in existing_order]
+                        remaining_cols = [col for col in remaining_cols if col != "% sul totale dataset"]
+                        details_table = details_table[existing_order + remaining_cols]
+                    st.dataframe(details_table, width='stretch', hide_index=True)
 
 # =====================================================================
 # TAB 2: ANALISI RISCHI (MAPPA FISICA, IPCC E NGFS)
