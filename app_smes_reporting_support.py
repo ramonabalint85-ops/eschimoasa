@@ -1084,6 +1084,20 @@ def clean_question_label(question):
     return re.sub(r'\s*\(\d+ datapoints\)$', '', str(question or '').strip())
 
 
+def to_italian_question_label(question_label):
+    """Traduce in italiano le etichette chiave richieste per la UI."""
+    label = str(question_label or '').strip()
+    normalized = label.lower()
+    translation_map = {
+        "interview management esg": "Gestione delle interviste ESG",
+        "balance/economics": "Bilancio/Economia",
+        "hr reporting": "Rendicontazione HR",
+        "governance overview": "Panoramica della governance",
+        "environmental certifications": "Certificazioni ambientali",
+    }
+    return translation_map.get(normalized, label)
+
+
 def is_interview_management_question(question):
     normalized_question = clean_question_label(question).lower()
     return "interview management esg" in normalized_question
@@ -1599,7 +1613,8 @@ with t_triage:
 
                     if is_auto_row:
                         auto_datapoints = get_question_datapoints(q)
-                        question_label = f"{i+1}. {clean_question_label(q)} ({auto_datapoints} datapoints)"
+                        translated_question = to_italian_question_label(clean_question_label(q))
+                        question_label = f"{i+1}. {translated_question} ({auto_datapoints} datapoints)"
                         if is_interview_row:
                             auto_answer = interview_management_auto_answer(selected_mode)
                         elif is_balance_row:
@@ -1637,8 +1652,9 @@ with t_triage:
 
                         stored_question = f"{clean_question_label(q)} ({auto_datapoints} datapoints)"
                     else:
+                        translated_q = to_italian_question_label(clean_question_label(q))
                         val = st.selectbox(
-                            f"{i+1}. {q}",
+                            f"{i+1}. {translated_q}",
                             scale_options,
                             key=answer_key
                         )
@@ -1695,6 +1711,7 @@ with t_triage:
 
             question_label = answer_data.get("q", q)
             clean_q = clean_question_label(question_label)
+            display_q = to_italian_question_label(clean_q)
             datapoints = get_question_datapoints(question_label)
             response_label = to_vsme_plot_response_label(answer_data.get("ans", ""))
             if response_label not in response_totals:
@@ -1702,7 +1719,7 @@ with t_triage:
             response_totals[response_label] += datapoints
 
             detail_rows.append({
-                "Domanda": clean_q,
+                "Domanda": display_q,
                 "Datapoints": datapoints,
                 "Risposta": response_label,
             })
@@ -1727,6 +1744,13 @@ with t_triage:
         }
 
         st.markdown(f"##### Readiness - {disclosure_label}")
+
+        details_df = pd.DataFrame(detail_rows)
+        if not details_df.empty and total_datapoints:
+            details_df["% sul totale disclosure"] = details_df["Datapoints"].apply(lambda x: f"{(x / total_datapoints * 100):.2f}%")
+            details_df = details_df[["Domanda", "Datapoints", "% sul totale disclosure", "Risposta"]]
+        st.dataframe(details_df, width='stretch', hide_index=True)
+
         fig = px.bar(
             df_distribution,
             x="Risposta",
@@ -1746,12 +1770,6 @@ with t_triage:
         table_distribution = df_distribution.copy()
         table_distribution["% sul totale disclosure"] = table_distribution["% sul totale disclosure"].apply(lambda x: f"{x:.2f}%")
         st.dataframe(table_distribution, width='stretch', hide_index=True)
-
-        details_df = pd.DataFrame(detail_rows)
-        if not details_df.empty and total_datapoints:
-            details_df["% sul totale disclosure"] = details_df["Datapoints"].apply(lambda x: f"{(x / total_datapoints * 100):.2f}%")
-            details_df = details_df[["Domanda", "Datapoints", "% sul totale disclosure", "Risposta"]]
-        st.dataframe(details_df, width='stretch', hide_index=True)
 
     def render_vsme_disclosure_tables(
         pillar_code,
