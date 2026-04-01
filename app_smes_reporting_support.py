@@ -1314,6 +1314,7 @@ def get_b2_table():
     """Ritorna il DataFrame della tabella B2 dalla sessione, inizializzandolo se assente."""
     tables = st.session_state.get('vsme_disclosure_tables', {})
     key = 'vsme_table_B2_pratiche_politiche'
+    all_cols = ["Tema"] + B2_COLONNE
     if key not in tables or not isinstance(tables[key], pd.DataFrame) or tables[key].empty:
         tables[key] = pd.DataFrame(
             [{"Tema": tema, **{col: "" for col in B2_COLONNE}} for tema in B2_TEMI]
@@ -1321,10 +1322,12 @@ def get_b2_table():
         st.session_state['vsme_disclosure_tables'] = tables
     else:
         df = tables[key].copy()
-        # migrazione: aggiunge colonne mancanti
-        for col in ["Tema"] + B2_COLONNE:
+        for col in all_cols:
             if col not in df.columns:
                 df[col] = ""
+        # Converti NaN / None / 'nan' / 'None' in stringa vuota
+        for col in B2_COLONNE:
+            df[col] = df[col].fillna("").astype(str).replace({'nan': '', 'None': ''})
         tables[key] = df
     return tables[key]
 
@@ -1335,6 +1338,15 @@ def _b2_col_has_si(col_name):
     if col_name not in df.columns:
         return False
     return any(str(v).strip() == "Sì" for v in df[col_name])
+
+
+def is_b2_checklist_question(question):
+    """True per le domande auto-calcolate dalla tabella B2 (scope B2, non B1)."""
+    return (
+        is_hse_action_plan_question(question)
+        or is_hse_policies_question(question)
+        or is_transition_plan_question(question)
+    )
 
 
 def is_hse_action_plan_question(question):
@@ -1467,6 +1479,16 @@ def build_priority_actions(max_risk_score=None, top_risk_asset=None):
 st.markdown(
     """
     <style>
+    /* ---- Sticky tab bar (tutte le sezioni) ---- */
+    [data-baseweb="tab-list"] {
+        position: sticky !important;
+        top: 0 !important;
+        z-index: 100 !important;
+        background: #ffffff !important;
+        padding-top: 4px !important;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.08) !important;
+    }
+    /* ---- Stili tab principali ---- */
     div[data-testid="stVerticalBlock"] > div:has(.app-main-tabs-marker) + div div[data-baseweb="tab-list"] button[role="tab"] {
         font-size: 1rem;
         font-weight: 600;
@@ -1541,7 +1563,19 @@ with t_triage:
                 if doc_key.startswith(prefix_scope) and doc_key not in valid_answer_keys:
                     del st.session_state[state_key]
 
+            b2_section_header_shown = False
+
             for i, q in enumerate(questions):
+                # Mostra intestazione sezione B2 prima della prima domanda B2
+                if is_b2_checklist_question(q) and not b2_section_header_shown:
+                    st.markdown("---")
+                    st.markdown(
+                        "<p style='font-weight:600; font-size:0.95rem; color:#5f4b8b; margin-bottom:0.3rem;'>"
+                        "📋 B2 – Pratiche, politiche e iniziative future</p>",
+                        unsafe_allow_html=True,
+                    )
+                    b2_section_header_shown = True
+
                 # Creare colonne: selectbox + bottone PDF allineati
                 col_q, col_pdf = st.columns([4, 1], vertical_alignment="bottom")
                 
@@ -1975,7 +2009,6 @@ with t_triage:
                             st.rerun()
 
                     elif b2_is_custom:
-                        st.markdown("##### B2 - Pratiche, politiche e iniziative future per la transizione verso un'economia più sostenibile")
                         st.caption(
                             "Per ogni risposta **Sì**, dovrà essere compilata la sezione C2 del Modulo Completo."
                         )
@@ -2117,10 +2150,20 @@ with t_triage:
                             key = f"{prefix}_{pillar}_{i}"
                             valid_keys.add(key)
                             key_to_module[key] = module_name
-            
+
+            # "B2" è un pillar virtuale per le domande HSE AP / HSE Policies / Transition Plan
+            checklist_label_map = {
+                "GEN": "Disclosure B1",
+                "B2": "Disclosure B2",
+                "E": pillar_titles["E"],
+                "S": pillar_titles["S"],
+                "G": pillar_titles["G"],
+            }
+            all_pillar_keys = list(pillar_titles.keys()) + ["B2"]
+
             ordered_options = [label for label in VSME_PLOT_RESPONSE_ORDER if label in response_colors]
-            pillar_totals = {pillar: {option: 0 for option in ordered_options} for pillar in pillar_titles}
-            pillar_details = {pillar: [] for pillar in pillar_titles}
+            pillar_totals = {p: {option: 0 for option in ordered_options} for p in all_pillar_keys}
+            pillar_details = {p: [] for p in all_pillar_keys}
             for key, data in st.session_state.gap_answers.items():
                 if key not in valid_keys:
                     continue
@@ -2131,22 +2174,25 @@ with t_triage:
                 module_name = key_to_module.get(key, "")
                 datapoints = get_question_datapoints(question)
                 clean_question = clean_question_label(question)
-                if pillar in pillar_totals and answer_label in pillar_totals[pillar]:
-                    pillar_totals[pillar][answer_label] += datapoints
-                if pillar in pillar_details:
-                    pillar_details[pillar].append({
+                # Domande B2 vengono assegnate al pillar virtuale "B2" invece di "GEN"
+                effective_pillar = "B2" if (pillar == "GEN" and is_b2_checklist_question(question)) else pillar
+                checklist_label = checklist_label_map.get(effective_pillar, pillar_titles.get(effective_pillar, effective_pillar))
+                if effective_pillar in pillar_totals and answer_label in pillar_totals[effective_pillar]:
+                    pillar_totals[effective_pillar][answer_label] += datapoints
+                if effective_pillar in pillar_details:
+                    pillar_details[effective_pillar].append({
                         "Modulo": module_name,
-                        "Checklist": pillar_titles.get(pillar, pillar),
+                        "Checklist": checklist_label,
                         "Domanda": clean_question,
                         "Risposta": answer_label,
                         "Datapoints": datapoints,
                     })
 
-            global_total_datapoints = sum(sum(pillar_totals[p].values()) for p in pillar_titles)
+            global_total_datapoints = sum(sum(pillar_totals[p].values()) for p in all_pillar_keys)
             response_totals = {option: 0 for option in ordered_options}
-            for pillar in pillar_titles:
+            for p in all_pillar_keys:
                 for option in ordered_options:
-                    response_totals[option] += pillar_totals[pillar][option]
+                    response_totals[option] += pillar_totals[p][option]
 
             response_distribution_rows = []
             for option in ordered_options:
@@ -2158,16 +2204,26 @@ with t_triage:
                     "% sul totale dataset": pct_dataset,
                 })
 
+            # Titoli da usare nelle intestazioni dei grafici per-pillar
+            pillar_display_title = {
+                "GEN": "Informazioni generali – Disclosure B1",
+                "B2": "Informazioni generali – Disclosure B2",
+                "E": pillar_titles["E"],
+                "S": pillar_titles["S"],
+                "G": pillar_titles["G"],
+            }
+
             per_pillar_summary = {}
             per_pillar_details = {}
             stacked_rows = []
             all_rows = []
-            for pillar, title in pillar_titles.items():
-                total_datapoints = sum(pillar_totals[pillar].values())
+            for p in all_pillar_keys:
+                title = pillar_display_title.get(p, p)
+                total_datapoints = sum(pillar_totals[p].values())
                 summary_rows = []
                 detail_rows = []
                 for option in ordered_options:
-                    datapoints = pillar_totals[pillar][option]
+                    datapoints = pillar_totals[p][option]
                     pct = (datapoints / total_datapoints * 100) if total_datapoints else 0.0
                     global_pct = (datapoints / global_total_datapoints * 100) if global_total_datapoints else 0.0
                     summary_row = {
@@ -2179,7 +2235,7 @@ with t_triage:
                     }
                     summary_rows.append(summary_row)
                     stacked_rows.append(summary_row)
-                for row in pillar_details[pillar]:
+                for row in pillar_details[p]:
                     detail_row = row.copy()
                     detail_row["% sul totale checklist"] = (
                         detail_row["Datapoints"] / total_datapoints * 100 if total_datapoints else 0.0
@@ -2191,19 +2247,20 @@ with t_triage:
                     all_rows.append(detail_row)
                 df_summary = pd.DataFrame(summary_rows)
                 df_details = pd.DataFrame(detail_rows)
-                per_pillar_summary[pillar] = df_summary
-                per_pillar_details[pillar] = df_details
+                per_pillar_summary[p] = df_summary
+                per_pillar_details[p] = df_details
 
             df_stacked = pd.DataFrame(stacked_rows)
             df_all_details = pd.DataFrame(all_rows)
             df_response_distribution = pd.DataFrame(response_distribution_rows)
-            
+
             return {
                 "summary": per_pillar_summary,
                 "details": per_pillar_details,
                 "stacked": df_stacked,
                 "all_details": df_all_details,
                 "response_distribution": df_response_distribution,
+                "pillar_display_title": pillar_display_title,
             }
 
         tab_summary = None
@@ -2411,16 +2468,21 @@ with t_triage:
         if selected_mode in ["base", "comprehensive"]:
             tab_mapping = {
                 "GEN": tab_gen,
+                "B2": tab_gen,   # Disclosure B2 mostrata nello stesso tab Informazioni generali
                 "E": c_v_E,
                 "S": c_v_S,
                 "G": c_v_G,
             }
+            pillar_display_title = results.get("pillar_display_title", pillar_titles)
 
             for pillar, tab in tab_mapping.items():
                 with tab:
-                    df_summary = results["summary"][pillar]
-                    df_details = results["details"][pillar]
-                    st.subheader(f"📊 {pillar_titles[pillar]}")
+                    df_summary = results["summary"].get(pillar, pd.DataFrame())
+                    df_details = results["details"].get(pillar, pd.DataFrame())
+                    if df_summary.empty:
+                        continue
+                    section_title = pillar_display_title.get(pillar, pillar_titles.get(pillar, pillar))
+                    st.subheader(f"📊 {section_title}")
                     fig = px.bar(
                         df_summary,
                         x="Risposta",
