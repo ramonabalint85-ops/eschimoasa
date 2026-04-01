@@ -1543,29 +1543,33 @@ with t_triage:
     st.subheader("Diagnosi azienda")
     st.write("Questa sezione serve a inquadrare il caso, verificare cosa si applica e identificare i gap documentali e informativi piu rilevanti.")
     
-    def render_gap_list(questions, pillar_code, tab_context, scale_options, prefix="gap"):
+    def render_gap_list(questions, pillar_code, tab_context, scale_options, prefix="gap", question_filter=None, manage_cleanup=True):
         with tab_context:
-            valid_answer_keys = {f"{prefix}_{pillar_code}_{i}" for i in range(len(questions))}
-            prefix_scope = f"{prefix}_{pillar_code}_"
+            if manage_cleanup:
+                valid_answer_keys = {f"{prefix}_{pillar_code}_{i}" for i in range(len(questions))}
+                prefix_scope = f"{prefix}_{pillar_code}_"
 
-            for key in list(st.session_state.get("gap_answers", {}).keys()):
-                if key.startswith(prefix_scope) and key not in valid_answer_keys:
-                    del st.session_state.gap_answers[key]
+                for key in list(st.session_state.get("gap_answers", {}).keys()):
+                    if key.startswith(prefix_scope) and key not in valid_answer_keys:
+                        del st.session_state.gap_answers[key]
 
-            for doc_key in list(st.session_state.get("gap_documents", {}).keys()):
-                if doc_key.startswith(prefix_scope) and doc_key not in valid_answer_keys:
-                    del st.session_state.gap_documents[doc_key]
+                for doc_key in list(st.session_state.get("gap_documents", {}).keys()):
+                    if doc_key.startswith(prefix_scope) and doc_key not in valid_answer_keys:
+                        del st.session_state.gap_documents[doc_key]
 
-            for state_key in list(st.session_state.keys()):
-                if not state_key.startswith("show_pdf_"):
-                    continue
-                doc_key = state_key.replace("show_pdf_", "", 1)
-                if doc_key.startswith(prefix_scope) and doc_key not in valid_answer_keys:
-                    del st.session_state[state_key]
+                for state_key in list(st.session_state.keys()):
+                    if not state_key.startswith("show_pdf_"):
+                        continue
+                    doc_key = state_key.replace("show_pdf_", "", 1)
+                    if doc_key.startswith(prefix_scope) and doc_key not in valid_answer_keys:
+                        del st.session_state[state_key]
 
             b2_section_header_shown = False
 
             for i, q in enumerate(questions):
+                if question_filter is not None and not question_filter(q):
+                    continue
+
                 # Mostra intestazione sezione B2 prima della prima domanda B2
                 if is_b2_checklist_question(q) and not b2_section_header_shown:
                     st.markdown("---")
@@ -1675,7 +1679,15 @@ with t_triage:
                             }
                             st.success(f"✅ PDF caricato: {uploaded_file.name}")
 
-    def render_vsme_disclosure_tables(pillar_code, selected_mode, tab_context, disclosure_reference):
+    def render_vsme_disclosure_tables(
+        pillar_code,
+        selected_mode,
+        tab_context,
+        disclosure_reference,
+        questions_for_pillar=None,
+        gap_scale_options=None,
+        gap_prefix="gap",
+    ):
         pillar_styles = {
             "GEN": {
                 "tab_bg": "#eaf3ff",
@@ -1736,6 +1748,18 @@ with t_triage:
         marker_class = f"vsme-subtabs-marker-{pillar_code}-{selected_mode}"
 
         with tab_context:
+            if pillar_code == "GEN" and questions_for_pillar is not None and gap_scale_options is not None:
+                # Pulizia chiavi una volta sola per GEN; il rendering filtrato B1/B2 avviene nei rispettivi tab.
+                render_gap_list(
+                    questions_for_pillar,
+                    pillar_code,
+                    st.container(),
+                    gap_scale_options,
+                    gap_prefix,
+                    question_filter=lambda _q: False,
+                    manage_cleanup=True,
+                )
+
             css_rules = [
                 "font-size: 1rem;",
                 "font-weight: 600;",
@@ -2017,6 +2041,19 @@ with t_triage:
                             st.session_state.vsme_disclosure_tables[cert_storage_key] = cert_table_df
                             st.rerun()
 
+                        if pillar_code == "GEN" and questions_for_pillar is not None and gap_scale_options is not None:
+                            st.markdown("---")
+                            st.markdown("##### Documenti e informazioni - Disclosure B1")
+                            render_gap_list(
+                                questions_for_pillar,
+                                pillar_code,
+                                st.container(),
+                                gap_scale_options,
+                                gap_prefix,
+                                question_filter=lambda q: not is_b2_checklist_question(q),
+                                manage_cleanup=False,
+                            )
+
                     elif b2_is_custom:
                         st.caption("Tabella di raccolta dati riferita alla Disclosure B2")
                         st.caption(
@@ -2075,6 +2112,19 @@ with t_triage:
                             if col in b2_edited.columns:
                                 b2_edited[col] = b2_edited[col].astype(str).replace({'None': '', 'nan': ''})
                         st.session_state.vsme_disclosure_tables[b2_key] = b2_edited
+
+                        if pillar_code == "GEN" and questions_for_pillar is not None and gap_scale_options is not None:
+                            st.markdown("---")
+                            st.markdown("##### Documenti e informazioni - Disclosure B2")
+                            render_gap_list(
+                                questions_for_pillar,
+                                pillar_code,
+                                st.container(),
+                                gap_scale_options,
+                                gap_prefix,
+                                question_filter=is_b2_checklist_question,
+                                manage_cleanup=False,
+                            )
 
                     if not b1_is_custom and not b2_is_custom:
                         if disclosure.get("tables"):
@@ -2372,8 +2422,15 @@ with t_triage:
             st.markdown("<div class='vsme-main-tabs-marker'></div>", unsafe_allow_html=True)
             tab_gen, c_v_E, c_v_S, c_v_G, tab_summary = st.tabs(["Informazioni generali", "Ambiente", "Sociale", "Governance", "Sintesi diagnosi"])
             if module_questions["GEN"]:
-                render_vsme_disclosure_tables("GEN", selected_mode, tab_gen, disclosure_reference)
-                render_gap_list(module_questions["GEN"], "GEN", tab_gen, vsme_scale_options, module_prefix)
+                render_vsme_disclosure_tables(
+                    "GEN",
+                    selected_mode,
+                    tab_gen,
+                    disclosure_reference,
+                    questions_for_pillar=module_questions["GEN"],
+                    gap_scale_options=vsme_scale_options,
+                    gap_prefix=module_prefix,
+                )
             else:
                 render_vsme_disclosure_tables("GEN", selected_mode, tab_gen, disclosure_reference)
             render_vsme_disclosure_tables("E", selected_mode, c_v_E, disclosure_reference)
