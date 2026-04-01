@@ -1679,6 +1679,80 @@ with t_triage:
                             }
                             st.success(f"✅ PDF caricato: {uploaded_file.name}")
 
+    def render_disclosure_readiness(questions, pillar_code, prefix, disclosure_label, question_filter):
+        ordered_options = list(VSME_PLOT_RESPONSE_ORDER)
+        response_totals = {option: 0 for option in ordered_options}
+        detail_rows = []
+
+        for i, q in enumerate(questions):
+            if question_filter is not None and not question_filter(q):
+                continue
+
+            answer_key = f"{prefix}_{pillar_code}_{i}"
+            answer_data = st.session_state.get("gap_answers", {}).get(answer_key)
+            if not answer_data:
+                continue
+
+            question_label = answer_data.get("q", q)
+            clean_q = clean_question_label(question_label)
+            datapoints = get_question_datapoints(question_label)
+            response_label = to_vsme_plot_response_label(answer_data.get("ans", ""))
+            if response_label not in response_totals:
+                response_totals[response_label] = 0
+            response_totals[response_label] += datapoints
+
+            detail_rows.append({
+                "Domanda": clean_q,
+                "Datapoints": datapoints,
+                "Risposta": response_label,
+            })
+
+        total_datapoints = sum(response_totals.values())
+        distribution_rows = []
+        for option in ordered_options:
+            dp = response_totals.get(option, 0)
+            pct = (dp / total_datapoints * 100) if total_datapoints else 0.0
+            distribution_rows.append({
+                "Risposta": option,
+                "Datapoints": dp,
+                "% sul totale disclosure": pct,
+            })
+
+        df_distribution = pd.DataFrame(distribution_rows)
+        color_map = {
+            "SI": "#2ecc71",
+            "Si, ma necessita": "#f39c12",
+            "No ma pianificato": "#3498db",
+            "No": "#e74c3c",
+        }
+
+        st.markdown(f"##### Readiness - {disclosure_label}")
+        fig = px.bar(
+            df_distribution,
+            x="Risposta",
+            y="% sul totale disclosure",
+            color="Risposta",
+            text=df_distribution["% sul totale disclosure"].apply(lambda x: f"{x:.2f}%"),
+            color_discrete_map=color_map,
+            category_orders={"Risposta": ordered_options},
+        )
+        fig.update_layout(
+            showlegend=False,
+            yaxis_title="Percentuale sul totale disclosure",
+            xaxis_title="Risposta",
+        )
+        st.plotly_chart(fig, width='stretch', key=f"readiness_{prefix}_{pillar_code}_{disclosure_label}")
+
+        table_distribution = df_distribution.copy()
+        table_distribution["% sul totale disclosure"] = table_distribution["% sul totale disclosure"].apply(lambda x: f"{x:.2f}%")
+        st.dataframe(table_distribution, width='stretch', hide_index=True)
+
+        details_df = pd.DataFrame(detail_rows)
+        if not details_df.empty and total_datapoints:
+            details_df["% sul totale disclosure"] = details_df["Datapoints"].apply(lambda x: f"{(x / total_datapoints * 100):.2f}%")
+            details_df = details_df[["Domanda", "Datapoints", "% sul totale disclosure", "Risposta"]]
+        st.dataframe(details_df, width='stretch', hide_index=True)
+
     def render_vsme_disclosure_tables(
         pillar_code,
         selected_mode,
@@ -2053,6 +2127,13 @@ with t_triage:
                                 question_filter=lambda q: not is_b2_checklist_question(q),
                                 manage_cleanup=False,
                             )
+                            render_disclosure_readiness(
+                                questions_for_pillar,
+                                pillar_code,
+                                gap_prefix,
+                                "Disclosure B1",
+                                question_filter=lambda q: not is_b2_checklist_question(q),
+                            )
 
                     elif b2_is_custom:
                         st.caption("Tabella di raccolta dati riferita alla Disclosure B2")
@@ -2124,6 +2205,13 @@ with t_triage:
                                 gap_prefix,
                                 question_filter=is_b2_checklist_question,
                                 manage_cleanup=False,
+                            )
+                            render_disclosure_readiness(
+                                questions_for_pillar,
+                                pillar_code,
+                                gap_prefix,
+                                "Disclosure B2",
+                                question_filter=is_b2_checklist_question,
                             )
 
                     if not b1_is_custom and not b2_is_custom:
