@@ -2562,8 +2562,6 @@ with t_triage:
 
         if selected_mode in ["base", "comprehensive"]:
             tab_mapping = {
-                "GEN": tab_gen,
-                "B2": tab_gen,   # Disclosure B2 mostrata nello stesso tab Informazioni generali
                 "E": c_v_E,
                 "S": c_v_S,
                 "G": c_v_G,
