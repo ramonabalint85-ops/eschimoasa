@@ -1754,6 +1754,14 @@ with t_triage:
             st.markdown(
                 f"""
                 <style>
+                div[data-testid="stVerticalBlock"] > div:has(.{marker_class}) ~ div div[data-baseweb="tab-list"] {{
+                    position: sticky !important;
+                    top: 2.5rem !important;
+                    z-index: 90 !important;
+                    background: #ffffff !important;
+                    padding-top: 4px !important;
+                    box-shadow: 0 2px 6px rgba(0,0,0,0.08) !important;
+                }}
                 div[data-testid="stVerticalBlock"] > div:has(.{marker_class}) ~ div div[data-baseweb="tab-list"] button[role="tab"] {{
                     {' '.join(css_rules)}
                 }}
@@ -1781,6 +1789,7 @@ with t_triage:
                     b1_is_custom = disclosure['code'] == "B1"
                     b2_is_custom = disclosure['code'] == "B2"
                     if b1_is_custom:
+                        st.caption("Tabella di raccolta dati riferita alla Disclosure B1")
                         st.markdown("#### Basis for preparation")
                         st.radio(
                             'Informazioni omesse in quanto ritenute riservate o sensibili?',
@@ -2009,22 +2018,48 @@ with t_triage:
                             st.rerun()
 
                     elif b2_is_custom:
+                        st.caption("Tabella di raccolta dati riferita alla Disclosure B2")
                         st.caption(
                             "Per ogni risposta **Sì**, dovrà essere compilata la sezione C2 del Modulo Completo."
                         )
 
                         b2_key = 'vsme_table_B2_pratiche_politiche'
                         b2_df = get_b2_table()
+                        b2_df = b2_df.where(pd.notna(b2_df), '')
+                        for col in B2_COLONNE:
+                            if col in b2_df.columns:
+                                b2_df[col] = b2_df[col].astype(str).replace({'None': '', 'nan': ''})
+
+                        st.markdown(
+                            """
+                            <style>
+                            div[data-testid="stDataEditor"] [role="columnheader"] div {
+                                white-space: normal !important;
+                                line-height: 1.2 !important;
+                                text-wrap: balance;
+                            }
+                            </style>
+                            """,
+                            unsafe_allow_html=True,
+                        )
 
                         column_config_b2 = {
-                            "Tema": st.column_config.TextColumn("Tema", disabled=True),
+                            "Tema": st.column_config.TextColumn("Tema", disabled=True, width="medium"),
                         }
                         si_no_options = ["", "Sì", "No"]
+                        b2_header_map = {
+                            B2_COLONNE[0]: "Pratiche\n(temi di sostenibilità)",
+                            B2_COLONNE[1]: "Politiche\n(temi di sostenibilità)",
+                            B2_COLONNE[2]: "Politiche\npubbliche",
+                            B2_COLONNE[3]: "Politiche con\nobiettivi",
+                            B2_COLONNE[4]: "Iniziative\nfuture",
+                        }
                         for col in B2_COLONNE:
                             column_config_b2[col] = st.column_config.SelectboxColumn(
-                                col,
+                                b2_header_map.get(col, col),
                                 options=si_no_options,
                                 required=False,
+                                width="small",
                             )
 
                         b2_edited = st.data_editor(
@@ -2036,6 +2071,9 @@ with t_triage:
                             use_container_width=True,
                         )
                         b2_edited = b2_edited.where(pd.notna(b2_edited), '')
+                        for col in B2_COLONNE:
+                            if col in b2_edited.columns:
+                                b2_edited[col] = b2_edited[col].astype(str).replace({'None': '', 'nan': ''})
                         st.session_state.vsme_disclosure_tables[b2_key] = b2_edited
 
                     if not b1_is_custom and not b2_is_custom:
