@@ -628,11 +628,7 @@ def load_vsme_checklist_from_excel(file_path=VSME_DEFAULT_FILE):
         import openpyxl
         # Carica il workbook con data_only=True per ottenere valori calcolati, non formule
         wb = openpyxl.load_workbook(file_path, data_only=True)
-        excluded_questions = {
-            'hse action plan',
-            'hse policies',
-            'transition plan',
-        }
+        excluded_questions = set()
 
         def parse_datapoints(value):
             if value is None or value == "":
@@ -1104,6 +1100,12 @@ def get_question_datapoints(question):
         return 2
     if is_environmental_certifications_question(question):
         return 1
+    if is_hse_action_plan_question(question):
+        return 1
+    if is_hse_policies_question(question):
+        return 1
+    if is_transition_plan_question(question):
+        return 2
     match = re.search(r'\((\d+) datapoints\)', str(question or ''))
     return int(match.group(1)) if match else 0
 
@@ -1278,6 +1280,99 @@ def environmental_certifications_auto_answer():
     if has_full:
         return 'Sì'
     if has_partial:
+        return 'Sì, ma con integrazione necessaria'
+    return None
+
+
+# ---------------------------------------------------------------
+# B2 TABLE HELPERS
+# ---------------------------------------------------------------
+
+B2_TEMI = [
+    "Cambiamento climatico",
+    "Inquinamento",
+    "Acqua e risorse marine",
+    "Biodiversità ed ecosistemi",
+    "Economia circolare",
+    "Forza lavoro propria",
+    "Lavoratori nella catena del valore",
+    "Comunità interessate",
+    "Consumatori e utenti finali",
+    "Condotta aziendale",
+]
+
+B2_COLONNE = [
+    "Esistono pratiche che affrontano dei temi di sostenibilità?",
+    "Esistono politiche di sostenibilità che affrontano dei temi di sostenibilità?",
+    "Le politiche sono disponibili pubblicamente?",
+    "Le politiche hanno degli obiettivi?",
+    "Esistono iniziative future che affrontano dei temi di sostenibilità?",
+]
+
+
+def get_b2_table():
+    """Ritorna il DataFrame della tabella B2 dalla sessione, inizializzandolo se assente."""
+    tables = st.session_state.get('vsme_disclosure_tables', {})
+    key = 'vsme_table_B2_pratiche_politiche'
+    if key not in tables or not isinstance(tables[key], pd.DataFrame) or tables[key].empty:
+        tables[key] = pd.DataFrame(
+            [{"Tema": tema, **{col: "" for col in B2_COLONNE}} for tema in B2_TEMI]
+        )
+        st.session_state['vsme_disclosure_tables'] = tables
+    else:
+        df = tables[key].copy()
+        # migrazione: aggiunge colonne mancanti
+        for col in ["Tema"] + B2_COLONNE:
+            if col not in df.columns:
+                df[col] = ""
+        tables[key] = df
+    return tables[key]
+
+
+def _b2_col_has_si(col_name):
+    """Ritorna True se almeno una riga della colonna col_name ha valore 'Sì'."""
+    df = get_b2_table()
+    if col_name not in df.columns:
+        return False
+    return any(str(v).strip() == "Sì" for v in df[col_name])
+
+
+def is_hse_action_plan_question(question):
+    return "hse action plan" in clean_question_label(question).lower()
+
+
+def hse_action_plan_auto_answer():
+    pratiche_col = B2_COLONNE[0]
+    if _b2_col_has_si(pratiche_col):
+        return 'Sì'
+    return None
+
+
+def is_hse_policies_question(question):
+    return "hse policies" in clean_question_label(question).lower()
+
+
+def hse_policies_auto_answer():
+    politiche_col = B2_COLONNE[1]
+    if _b2_col_has_si(politiche_col):
+        return 'Sì'
+    return None
+
+
+def is_transition_plan_question(question):
+    return "transition plan" in clean_question_label(question).lower()
+
+
+def transition_plan_auto_answer():
+    # dp1: ≥1 Sì in colonna "obiettivi"
+    # dp2: ≥1 Sì in colonna "iniziative future"
+    obiettivi_col = B2_COLONNE[3]
+    iniziative_col = B2_COLONNE[4]
+    dp1 = _b2_col_has_si(obiettivi_col)
+    dp2 = _b2_col_has_si(iniziative_col)
+    if dp1 and dp2:
+        return 'Sì'
+    if dp1 or dp2:
         return 'Sì, ma con integrazione necessaria'
     return None
 
@@ -1457,7 +1552,12 @@ with t_triage:
                     is_hr_row = is_hr_reporting_question(q)
                     is_governance_row = is_governance_overview_question(q)
                     is_env_cert_row = is_environmental_certifications_question(q)
-                    is_auto_row = is_interview_row or is_balance_row or is_hr_row or is_governance_row or is_env_cert_row
+                    is_hse_ap_row = is_hse_action_plan_question(q)
+                    is_hse_pol_row = is_hse_policies_question(q)
+                    is_transition_row = is_transition_plan_question(q)
+                    is_auto_row = (is_interview_row or is_balance_row or is_hr_row
+                                   or is_governance_row or is_env_cert_row
+                                   or is_hse_ap_row or is_hse_pol_row or is_transition_row)
 
                     if is_auto_row:
                         auto_datapoints = get_question_datapoints(q)
@@ -1470,8 +1570,14 @@ with t_triage:
                             auto_answer = hr_reporting_auto_answer()
                         elif is_governance_row:
                             auto_answer = governance_overview_auto_answer()
-                        else:
+                        elif is_env_cert_row:
                             auto_answer = environmental_certifications_auto_answer()
+                        elif is_hse_ap_row:
+                            auto_answer = hse_action_plan_auto_answer()
+                        elif is_hse_pol_row:
+                            auto_answer = hse_policies_auto_answer()
+                        else:
+                            auto_answer = transition_plan_auto_answer()
 
                         if auto_answer is not None:
                             st.session_state[answer_key] = auto_answer
@@ -1639,6 +1745,7 @@ with t_triage:
                     )
 
                     b1_is_custom = disclosure['code'] == "B1"
+                    b2_is_custom = disclosure['code'] == "B2"
                     if b1_is_custom:
                         st.markdown("#### Basis for preparation")
                         st.radio(
@@ -1867,7 +1974,38 @@ with t_triage:
                             st.session_state.vsme_disclosure_tables[cert_storage_key] = cert_table_df
                             st.rerun()
 
-                    if not b1_is_custom:
+                    elif b2_is_custom:
+                        st.markdown("##### B2 - Pratiche, politiche e iniziative future per la transizione verso un'economia più sostenibile")
+                        st.caption(
+                            "Per ogni risposta **Sì**, dovrà essere compilata la sezione C2 del Modulo Completo."
+                        )
+
+                        b2_key = 'vsme_table_B2_pratiche_politiche'
+                        b2_df = get_b2_table()
+
+                        column_config_b2 = {
+                            "Tema": st.column_config.TextColumn("Tema", disabled=True),
+                        }
+                        si_no_options = ["", "Sì", "No"]
+                        for col in B2_COLONNE:
+                            column_config_b2[col] = st.column_config.SelectboxColumn(
+                                col,
+                                options=si_no_options,
+                                required=False,
+                            )
+
+                        b2_edited = st.data_editor(
+                            b2_df,
+                            key=f"editor_{b2_key}",
+                            column_config=column_config_b2,
+                            hide_index=True,
+                            num_rows="fixed",
+                            use_container_width=True,
+                        )
+                        b2_edited = b2_edited.where(pd.notna(b2_edited), '')
+                        st.session_state.vsme_disclosure_tables[b2_key] = b2_edited
+
+                    if not b1_is_custom and not b2_is_custom:
                         if disclosure.get("tables"):
                             for table in disclosure["tables"]:
                                 editor_storage_key = f"vsme_table_{pillar_code}_{selected_mode}_{disclosure['code']}_{table['sheet_name']}"
