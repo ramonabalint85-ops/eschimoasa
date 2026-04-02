@@ -1193,13 +1193,15 @@ def balance_economics_auto_answer():
     tables = st.session_state.get('vsme_disclosure_tables', {})
     df = tables.get('vsme_table_B1_dimensioni')
     if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+        year_cols = sorted([col for col in df.columns if str(col).isdigit() and len(str(col)) == 4])
+        target_year_cols = year_cols[-2:] if len(year_cols) >= 2 else ['2024', '2025']
         if df.shape[0] > 0:
             row0 = df.iloc[0]
-            if any(str(row0.get(col, '')).strip() for col in ['2024', '2025']):
+            if any(str(row0.get(col, '')).strip() for col in target_year_cols):
                 filled += 1
         if df.shape[0] > 1:
             row1 = df.iloc[1]
-            if any(str(row1.get(col, '')).strip() for col in ['2024', '2025']):
+            if any(str(row1.get(col, '')).strip() for col in target_year_cols):
                 filled += 1
 
     if filled == 4:
@@ -1221,12 +1223,14 @@ def hr_reporting_auto_answer():
         return None
 
     row = df.iloc[2]
-    val_2024 = str(row.get('2024', '')).strip()
-    val_2025 = str(row.get('2025', '')).strip()
+    year_cols = sorted([col for col in df.columns if str(col).isdigit() and len(str(col)) == 4])
+    target_year_cols = year_cols[-2:] if len(year_cols) >= 2 else ['2024', '2025']
+    val_prev = str(row.get(target_year_cols[0], '')).strip()
+    val_curr = str(row.get(target_year_cols[1], '')).strip()
 
-    if val_2024 and val_2025:
+    if val_prev and val_curr:
         return 'Sì'
-    if val_2024 or val_2025:
+    if val_prev or val_curr:
         return 'Sì, ma con integrazione necessaria'
     return None
 
@@ -1578,21 +1582,11 @@ with t_triage:
                     if doc_key.startswith(prefix_scope) and doc_key not in valid_answer_keys:
                         del st.session_state[state_key]
 
-            b2_section_header_shown = False
+            display_index = 1
 
             for i, q in enumerate(questions):
                 if question_filter is not None and not question_filter(q):
                     continue
-
-                # Mostra intestazione sezione B2 prima della prima domanda B2
-                if is_b2_checklist_question(q) and not b2_section_header_shown:
-                    st.markdown("---")
-                    st.markdown(
-                        "<p style='font-weight:600; font-size:0.95rem; color:#5f4b8b; margin-bottom:0.3rem;'>"
-                        "📋 B2 – Pratiche, politiche e iniziative future</p>",
-                        unsafe_allow_html=True,
-                    )
-                    b2_section_header_shown = True
 
                 # Creare colonne: selectbox + bottone PDF allineati
                 col_q, col_pdf = st.columns([4, 1], vertical_alignment="bottom")
@@ -1614,7 +1608,7 @@ with t_triage:
                     if is_auto_row:
                         auto_datapoints = get_question_datapoints(q)
                         translated_question = to_italian_question_label(clean_question_label(q))
-                        question_label = f"{i+1}. {translated_question} ({auto_datapoints} datapoints)"
+                        question_label = f"{display_index}. {translated_question} ({auto_datapoints} datapoints)"
                         if is_interview_row:
                             auto_answer = interview_management_auto_answer(selected_mode)
                         elif is_balance_row:
@@ -1654,7 +1648,7 @@ with t_triage:
                     else:
                         translated_q = to_italian_question_label(clean_question_label(q))
                         val = st.selectbox(
-                            f"{i+1}. {translated_q}",
+                            f"{display_index}. {translated_q}",
                             scale_options,
                             key=answer_key
                         )
@@ -1665,6 +1659,7 @@ with t_triage:
                         "pillar": pillar_code,
                         "q": stored_question,
                     }
+                    display_index += 1
                 
                 with col_pdf:
                     doc_key = f"{prefix}_{pillar_code}_{i}"
@@ -1904,9 +1899,8 @@ with t_triage:
 
                     b1_is_custom = disclosure['code'] == "B1"
                     b2_is_custom = disclosure['code'] == "B2"
+                    b3_is_custom = disclosure['code'] == "B3"
                     if b1_is_custom:
-                        st.caption("Tabella di raccolta dati riferita alla Disclosure B1")
-                        st.markdown("#### Basis for preparation")
                         st.radio(
                             'Informazioni omesse in quanto ritenute riservate o sensibili?',
                             ['Si', 'No'],
@@ -1982,24 +1976,33 @@ with t_triage:
                                 st.rerun()
 
                         dimensioni_storage_key = "vsme_table_B1_dimensioni"
+                        compilation_year = datetime.now().year
+                        dim_prev_year_col = str(compilation_year - 2)
+                        dim_curr_year_col = str(compilation_year - 1)
+
                         if dimensioni_storage_key not in st.session_state.vsme_disclosure_tables:
                             st.session_state.vsme_disclosure_tables[dimensioni_storage_key] = pd.DataFrame([
-                                {"Dimensione": "Totale degli attivi", "2024": "", "2025": ""},
-                                {"Dimensione": "Fatturato", "2024": "", "2025": ""},
-                                {"Dimensione": "Numero di dipendenti", "2024": "", "2025": ""},
+                                {"Dimensione": "Totale degli attivi", dim_prev_year_col: "", dim_curr_year_col: ""},
+                                {"Dimensione": "Fatturato", dim_prev_year_col: "", dim_curr_year_col: ""},
+                                {"Dimensione": "Numero di dipendenti", dim_prev_year_col: "", dim_curr_year_col: ""},
                             ])
                         else:
                             dim_df = st.session_state.vsme_disclosure_tables[dimensioni_storage_key].copy()
-                            expected_columns = ["Dimensione", "2024", "2025"]
+                            if dim_prev_year_col not in dim_df.columns and '2024' in dim_df.columns:
+                                dim_df[dim_prev_year_col] = dim_df['2024']
+                            if dim_curr_year_col not in dim_df.columns and '2025' in dim_df.columns:
+                                dim_df[dim_curr_year_col] = dim_df['2025']
+
+                            expected_columns = ["Dimensione", dim_prev_year_col, dim_curr_year_col]
                             for col in expected_columns:
                                 if col not in dim_df.columns:
                                     dim_df[col] = ""
                             dim_df = dim_df[expected_columns].where(pd.notna(dim_df[expected_columns]), '')
                             if dim_df.empty:
                                 dim_df = pd.DataFrame([
-                                    {"Dimensione": "Totale degli attivi", "2024": "", "2025": ""},
-                                    {"Dimensione": "Fatturato", "2024": "", "2025": ""},
-                                    {"Dimensione": "Numero di dipendenti", "2024": "", "2025": ""},
+                                    {"Dimensione": "Totale degli attivi", dim_prev_year_col: "", dim_curr_year_col: ""},
+                                    {"Dimensione": "Fatturato", dim_prev_year_col: "", dim_curr_year_col: ""},
+                                    {"Dimensione": "Numero di dipendenti", dim_prev_year_col: "", dim_curr_year_col: ""},
                                 ])
                             st.session_state.vsme_disclosure_tables[dimensioni_storage_key] = dim_df
 
@@ -2154,9 +2157,8 @@ with t_triage:
                             )
 
                     elif b2_is_custom:
-                        st.caption("Tabella di raccolta dati riferita alla Disclosure B2")
                         st.caption(
-                            "Per ogni risposta **Sì**, dovrà essere compilata la sezione C2 del Modulo Completo."
+                            "Per ogni tema selezionato, dovrà essere compilata la sezione C2 del Modulo Completo."
                         )
 
                         b2_key = 'vsme_table_B2_pratiche_politiche'
@@ -2166,13 +2168,27 @@ with t_triage:
                             if col in b2_df.columns:
                                 b2_df[col] = b2_df[col].astype(str).replace({'None': '', 'nan': ''})
 
+                        b2_display_df = b2_df.copy()
+                        for col in B2_COLONNE:
+                            if col in b2_display_df.columns:
+                                b2_display_df[col] = b2_display_df[col].apply(lambda v: str(v).strip() == "Sì")
+
                         st.markdown(
                             """
                             <style>
+                            div[data-testid="stDataEditor"] [role="columnheader"] {
+                                height: 96px !important;
+                                min-height: 96px !important;
+                                max-height: none !important;
+                                align-items: flex-start !important;
+                                padding-top: 6px !important;
+                            }
                             div[data-testid="stDataEditor"] [role="columnheader"] div {
-                                white-space: normal !important;
-                                line-height: 1.2 !important;
-                                text-wrap: balance;
+                                white-space: pre-wrap !important;
+                                overflow-wrap: anywhere !important;
+                                line-height: 1.15 !important;
+                                height: auto !important;
+                                max-height: none !important;
                             }
                             </style>
                             """,
@@ -2180,37 +2196,41 @@ with t_triage:
                         )
 
                         column_config_b2 = {
-                            "Tema": st.column_config.TextColumn("Tema", disabled=True, width="medium"),
+                            "Tema": st.column_config.TextColumn(
+                                "Tema",
+                                disabled=True,
+                                width="medium",
+                                help="Tema di sostenibilità di riferimento",
+                            ),
                         }
-                        si_no_options = ["", "Sì", "No"]
                         b2_header_map = {
-                            B2_COLONNE[0]: "Pratiche\n(temi di sostenibilità)",
-                            B2_COLONNE[1]: "Politiche\n(temi di sostenibilità)",
-                            B2_COLONNE[2]: "Politiche\npubbliche",
-                            B2_COLONNE[3]: "Politiche con\nobiettivi",
-                            B2_COLONNE[4]: "Iniziative\nfuture",
+                            B2_COLONNE[0]: "Esistono pratiche che affrontano\ndei temi di sostenibilità?",
+                            B2_COLONNE[1]: "Esistono politiche di sostenibilità che affrontano\ndei temi di sostenibilità?",
+                            B2_COLONNE[2]: "Le politiche sono\ndisponibili pubblicamente?",
+                            B2_COLONNE[3]: "Le politiche hanno\ndegli obiettivi?",
+                            B2_COLONNE[4]: "Esistono iniziative future che affrontano\ndei temi di sostenibilità?",
                         }
                         for col in B2_COLONNE:
-                            column_config_b2[col] = st.column_config.SelectboxColumn(
+                            column_config_b2[col] = st.column_config.CheckboxColumn(
                                 b2_header_map.get(col, col),
-                                options=si_no_options,
-                                required=False,
                                 width="small",
+                                help=col,
                             )
 
                         b2_edited = st.data_editor(
-                            b2_df,
+                            b2_display_df,
                             key=f"editor_{b2_key}",
                             column_config=column_config_b2,
                             hide_index=True,
                             num_rows="fixed",
                             use_container_width=True,
                         )
-                        b2_edited = b2_edited.where(pd.notna(b2_edited), '')
+
+                        saved_b2 = b2_df.copy()
                         for col in B2_COLONNE:
                             if col in b2_edited.columns:
-                                b2_edited[col] = b2_edited[col].astype(str).replace({'None': '', 'nan': ''})
-                        st.session_state.vsme_disclosure_tables[b2_key] = b2_edited
+                                saved_b2[col] = b2_edited[col].fillna(False).apply(lambda v: "Sì" if bool(v) else "No")
+                        st.session_state.vsme_disclosure_tables[b2_key] = saved_b2
 
                         if pillar_code == "GEN" and questions_for_pillar is not None and gap_scale_options is not None:
                             st.markdown("---")
@@ -2232,7 +2252,397 @@ with t_triage:
                                 question_filter=is_b2_checklist_question,
                             )
 
-                    if not b1_is_custom and not b2_is_custom:
+                    elif b3_is_custom:
+                        compilation_year = datetime.now().year
+                        prev_year = compilation_year - 1
+                        prev_prev_year = compilation_year - 2
+                        b3_key = 'vsme_table_B3_energia_emissioni'
+                        b3_col_label = "Energia e emissioni di gas a effetto serra"
+                        b3_col_udm = "UdM"
+                        b3_rows = [
+                            ("Energia elettrica acquistata senza GdO", "kWh"),
+                            ("Energia elettrica acquistata con GdO", "kWh"),
+                            ("Energia elettrica autoprodotta da fonti rinnovabili", "kWh"),
+                            ("Benzina per autotrazione", "litri"),
+                            ("Gasolio per autotrazione", "litri"),
+                            ("GPL per autotrazione", "kg"),
+                            ("Metano per autotrazione", "m³"),
+                            ("Metano per alimentazione caldaie/macchinari", "m³"),
+                            ("GPL per alimentazione caldaie/macchinari", "kg"),
+                            ("Gasolio per alimentazione caldaie/macchinari", "litri"),
+                        ]
+
+                        def _sede_prev_col(site_idx):
+                            return f"Sede {site_idx} - {prev_prev_year}"
+
+                        def _sede_curr_col(site_idx):
+                            return f"Sede {site_idx} - {prev_year}"
+
+                        def _sede_var_col(site_idx):
+                            if site_idx == 1:
+                                return "Variazione %"
+                            return f"Variazione % Sede {site_idx}"
+
+                        def _compute_variazione_b3(row, prev_col, curr_col):
+                            try:
+                                prev_val = float(str(row[prev_col]).replace(",", ".").strip())
+                                curr_val = float(str(row[curr_col]).replace(",", ".").strip())
+                                if prev_val == 0:
+                                    return ""
+                                return f"{round((curr_val - prev_val) / abs(prev_val) * 100, 2):+.2f}%"
+                            except (ValueError, TypeError, KeyError):
+                                return ""
+
+                        base_data = {b3_col_label: [], b3_col_udm: []}
+                        for label, udm in b3_rows:
+                            base_data[b3_col_label].append(label)
+                            base_data[b3_col_udm].append(udm)
+                        default_df = pd.DataFrame(base_data)
+                        default_df[_sede_prev_col(1)] = ""
+                        default_df[_sede_curr_col(1)] = ""
+
+                        if b3_key not in st.session_state.vsme_disclosure_tables:
+                            st.session_state.vsme_disclosure_tables[b3_key] = default_df.copy()
+
+                        b3_df = st.session_state.vsme_disclosure_tables[b3_key].copy()
+                        if b3_df.empty:
+                            b3_df = default_df.copy()
+
+                        if b3_col_label not in b3_df.columns:
+                            b3_df[b3_col_label] = [label for label, _ in b3_rows]
+                        if b3_col_udm not in b3_df.columns:
+                            b3_df[b3_col_udm] = [udm for _, udm in b3_rows]
+
+                        # Mantieni struttura righe fissa e ordinata.
+                        b3_df = b3_df.set_index(b3_col_label, drop=False)
+                        for label, udm in b3_rows:
+                            if label not in b3_df.index:
+                                b3_df.loc[label, b3_col_label] = label
+                                b3_df.loc[label, b3_col_udm] = udm
+                        b3_df = b3_df.loc[[label for label, _ in b3_rows]].reset_index(drop=True)
+                        b3_df[b3_col_udm] = [udm for _, udm in b3_rows]
+
+                        # Numero sedi gestito tramite session state dedicato.
+                        b3_num_sites_key = 'b3_num_sites'
+                        if b3_num_sites_key not in st.session_state:
+                            st.session_state[b3_num_sites_key] = 1
+                        site_numbers = list(range(1, st.session_state[b3_num_sites_key] + 1))
+
+                        for site_idx in site_numbers:
+                            prev_col = _sede_prev_col(site_idx)
+                            curr_col = _sede_curr_col(site_idx)
+                            if prev_col not in b3_df.columns:
+                                b3_df[prev_col] = ""
+                            if curr_col not in b3_df.columns:
+                                b3_df[curr_col] = ""
+
+                        # Opzioni UdM disponibili per energia/emissioni.
+                        b3_udm_options = [
+                            "kWh", "MWh", "GJ", "litri", "m³", "Nm³", "kg", "t",
+                            "tCO2eq", "kgCO2eq", "MJ", "toe",
+                        ]
+                        # Assicura che il valore corrente sia sempre nella lista.
+                        for udm_val in b3_df[b3_col_udm].unique():
+                            if str(udm_val).strip() and str(udm_val).strip() not in b3_udm_options:
+                                b3_udm_options.insert(0, str(udm_val).strip())
+
+                        # Costruisci dataframe di visualizzazione con colonne variazione auto-calcolate.
+                        ordered_display_cols = [b3_col_label, b3_col_udm]
+                        column_config_b3 = {
+                            b3_col_label: st.column_config.TextColumn(
+                                b3_col_label,
+                                disabled=True,
+                                width="medium",
+                                help=b3_col_label,
+                            ),
+                            b3_col_udm: st.column_config.SelectboxColumn(
+                                b3_col_udm,
+                                options=b3_udm_options,
+                                required=False,
+                                width="small",
+                                help="Unità di misura — modificabile",
+                            ),
+                        }
+
+                        for site_idx in sorted(site_numbers):
+                            prev_col = _sede_prev_col(site_idx)
+                            curr_col = _sede_curr_col(site_idx)
+                            var_col = _sede_var_col(site_idx)
+                            b3_df[var_col] = b3_df.apply(lambda row, p=prev_col, c=curr_col: _compute_variazione_b3(row, p, c), axis=1)
+                            ordered_display_cols.extend([prev_col, curr_col, var_col])
+                            column_config_b3[prev_col] = st.column_config.TextColumn(prev_col, width="small", help=prev_col)
+                            column_config_b3[curr_col] = st.column_config.TextColumn(curr_col, width="small", help=curr_col)
+                            column_config_b3[var_col] = st.column_config.TextColumn(var_col, disabled=True, width="small", help=var_col)
+
+                        df_b3_display = b3_df[ordered_display_cols].copy()
+
+                        edited_b3 = st.data_editor(
+                            df_b3_display,
+                            key=f"editor_{b3_key}_{st.session_state[b3_num_sites_key]}",
+                            column_config=column_config_b3,
+                            hide_index=True,
+                            num_rows="fixed",
+                            width='stretch',
+                        )
+
+                        editable_cols = [b3_col_label, b3_col_udm]
+                        for site_idx in sorted(site_numbers):
+                            editable_cols.extend([_sede_prev_col(site_idx), _sede_curr_col(site_idx)])
+                        saved_b3 = edited_b3[[c for c in editable_cols if c in edited_b3.columns]].copy()
+                        saved_b3 = saved_b3.where(pd.notna(saved_b3), "")
+                        st.session_state.vsme_disclosure_tables[b3_key] = saved_b3
+
+                        if st.button("+ Aggiungi sede", key="b3_add_site_btn"):
+                            st.session_state[b3_num_sites_key] += 1
+                            st.rerun()
+
+                        # ── Tabella GHG Emissioni ─────────────────────────────────────────
+                        st.markdown("---")
+                        b3_ghg_key = 'vsme_table_B3_ghg_emissioni'
+                        b3_ghg_col_label = "Emissioni di gas a effetto serra"
+                        b3_ghg_col_udm = "UdM"
+
+                        # 4 righe fisse; GHG intensity è auto-calcolata.
+                        b3_ghg_rows = [
+                            ("Emissioni GHG Scope 1", "ton CO2eq"),
+                            ("Emissioni GHG Scope 2 (location-based)", "ton CO2eq"),
+                            ("Emissioni GHG Scope 3 (location-based)", "ton CO2eq"),
+                            ("GHG intensity", "ton CO2eq/€"),
+                        ]
+                        GHG_SCOPE1_LABEL = "Emissioni GHG Scope 1"
+                        GHG_SCOPE2_LABEL = "Emissioni GHG Scope 2 (location-based)"
+                        GHG_INTENSITY_LABEL = "GHG intensity"
+
+                        def _ghg_sede_prev_col(site_idx):
+                            return f"Sede {site_idx} - {prev_prev_year}"
+
+                        def _ghg_sede_curr_col(site_idx):
+                            return f"Sede {site_idx} - {prev_year}"
+
+                        def _ghg_sede_var_col(site_idx):
+                            return "Variazione %" if site_idx == 1 else f"Variazione % Sede {site_idx}"
+
+                        def _compute_variazione_ghg(row, p, c):
+                            try:
+                                pv = float(str(row[p]).replace(",", ".").strip())
+                                cv = float(str(row[c]).replace(",", ".").strip())
+                                if pv == 0:
+                                    return ""
+                                return f"{round((cv - pv) / abs(pv) * 100, 2):+.2f}%"
+                            except (ValueError, TypeError, KeyError):
+                                return ""
+
+                        ghg_base = {b3_ghg_col_label: [], b3_ghg_col_udm: []}
+                        for lbl, udm in b3_ghg_rows:
+                            ghg_base[b3_ghg_col_label].append(lbl)
+                            ghg_base[b3_ghg_col_udm].append(udm)
+                        ghg_default_df = pd.DataFrame(ghg_base)
+                        ghg_default_df[_ghg_sede_prev_col(1)] = ""
+                        ghg_default_df[_ghg_sede_curr_col(1)] = ""
+
+                        if b3_ghg_key not in st.session_state.vsme_disclosure_tables:
+                            st.session_state.vsme_disclosure_tables[b3_ghg_key] = ghg_default_df.copy()
+
+                        ghg_df = st.session_state.vsme_disclosure_tables[b3_ghg_key].copy()
+                        if ghg_df.empty:
+                            ghg_df = ghg_default_df.copy()
+
+                        if b3_ghg_col_label not in ghg_df.columns:
+                            ghg_df[b3_ghg_col_label] = [l for l, _ in b3_ghg_rows]
+                        if b3_ghg_col_udm not in ghg_df.columns:
+                            ghg_df[b3_ghg_col_udm] = [u for _, u in b3_ghg_rows]
+
+                        # Struttura righe fissa.
+                        ghg_df = ghg_df.set_index(b3_ghg_col_label, drop=False)
+                        for lbl, udm in b3_ghg_rows:
+                            if lbl not in ghg_df.index:
+                                ghg_df.loc[lbl, b3_ghg_col_label] = lbl
+                                ghg_df.loc[lbl, b3_ghg_col_udm] = udm
+                        ghg_df = ghg_df.loc[[l for l, _ in b3_ghg_rows]].reset_index(drop=True)
+                        ghg_df[b3_ghg_col_udm] = [u for _, u in b3_ghg_rows]
+
+                        # Numero sedi per la tabella GHG (condiviso con la tabella energia).
+                        b3_ghg_num_sites_key = 'b3_ghg_num_sites'
+                        if b3_ghg_num_sites_key not in st.session_state:
+                            st.session_state[b3_ghg_num_sites_key] = 1
+                        ghg_site_numbers = list(range(1, st.session_state[b3_ghg_num_sites_key] + 1))
+
+                        for site_idx in ghg_site_numbers:
+                            pc = _ghg_sede_prev_col(site_idx)
+                            cc = _ghg_sede_curr_col(site_idx)
+                            if pc not in ghg_df.columns:
+                                ghg_df[pc] = ""
+                            if cc not in ghg_df.columns:
+                                ghg_df[cc] = ""
+
+                        # Parser numerico robusto (supporta 1.234,56 e 1234.56).
+                        def _parse_number(raw_val):
+                            try:
+                                raw = str(raw_val).strip().replace(" ", "")
+                                if not raw:
+                                    return None
+                                if "," in raw and "." in raw:
+                                    # Caso EU: 1.234,56
+                                    clean = raw.replace(".", "").replace(",", ".")
+                                elif "," in raw:
+                                    clean = raw.replace(",", ".")
+                                else:
+                                    clean = raw
+                                return float(clean)
+                            except Exception:
+                                return None
+
+                        # Leggi Fatturato dalla tabella Dimensioni (riga 1) per anno corrente e precedente.
+                        def _get_fatturato_safe(year_col):
+                            try:
+                                dim_df = st.session_state.vsme_disclosure_tables.get('vsme_table_B1_dimensioni')
+                                if dim_df is None or dim_df.shape[0] < 2:
+                                    return None
+                                return _parse_number(dim_df.iloc[1].get(year_col, ""))
+                            except Exception:
+                                return None
+
+                        # Costruisci visualizzazione con GHG intensity calcolata e variazioni.
+                        ghg_ordered_cols = [b3_ghg_col_label, b3_ghg_col_udm]
+                        ghg_column_config = {
+                            b3_ghg_col_label: st.column_config.TextColumn(
+                                b3_ghg_col_label,
+                                disabled=True,
+                                width="medium",
+                                help=b3_ghg_col_label,
+                            ),
+                            b3_ghg_col_udm: st.column_config.TextColumn(
+                                b3_ghg_col_udm,
+                                disabled=True,
+                                width="small",
+                                help="Unità di misura",
+                            ),
+                        }
+
+                        ghg_df_display = ghg_df[[b3_ghg_col_label, b3_ghg_col_udm]].copy()
+                        fat_prev = _get_fatturato_safe(str(compilation_year - 2))
+                        fat_curr = _get_fatturato_safe(str(compilation_year - 1))
+
+                        for site_idx in sorted(ghg_site_numbers):
+                            pc = _ghg_sede_prev_col(site_idx)
+                            cc = _ghg_sede_curr_col(site_idx)
+                            vc = _ghg_sede_var_col(site_idx)
+
+                            ghg_df_display[pc] = ghg_df[pc].copy()
+                            ghg_df_display[cc] = ghg_df[cc].copy()
+
+                            # Calcola GHG intensity: (Scope1 + Scope2) / Fatturato
+                            try:
+                                s1_prev = _parse_number(ghg_df.loc[ghg_df[b3_ghg_col_label] == GHG_SCOPE1_LABEL, pc].values[0])
+                            except Exception:
+                                s1_prev = None
+                            try:
+                                s2_prev = _parse_number(ghg_df.loc[ghg_df[b3_ghg_col_label] == GHG_SCOPE2_LABEL, pc].values[0])
+                            except Exception:
+                                s2_prev = None
+                            try:
+                                s1_curr = _parse_number(ghg_df.loc[ghg_df[b3_ghg_col_label] == GHG_SCOPE1_LABEL, cc].values[0])
+                            except Exception:
+                                s1_curr = None
+                            try:
+                                s2_curr = _parse_number(ghg_df.loc[ghg_df[b3_ghg_col_label] == GHG_SCOPE2_LABEL, cc].values[0])
+                            except Exception:
+                                s2_curr = None
+
+                            if s1_prev is not None and s2_prev is not None and fat_prev and fat_prev != 0:
+                                ghg_intensity_prev = f"{(s1_prev + s2_prev) / fat_prev:.6g}"
+                            else:
+                                ghg_intensity_prev = ""
+                            if s1_curr is not None and s2_curr is not None and fat_curr and fat_curr != 0:
+                                ghg_intensity_curr = f"{(s1_curr + s2_curr) / fat_curr:.6g}"
+                            else:
+                                ghg_intensity_curr = ""
+
+                            # Forza i valori di GHG intensity nel display df
+                            intensity_mask = ghg_df_display[b3_ghg_col_label] == GHG_INTENSITY_LABEL
+                            ghg_df_display.loc[intensity_mask, pc] = ghg_intensity_prev
+                            ghg_df_display.loc[intensity_mask, cc] = ghg_intensity_curr
+
+                            # Calcola variazione per tutte le righe
+                            def _var_ghg_row(row, p=pc, c=cc):
+                                try:
+                                    pv = float(str(row[p]).replace(",", ".").strip())
+                                    cv = float(str(row[c]).replace(",", ".").strip())
+                                    if pv == 0:
+                                        return ""
+                                    return f"{round((cv - pv) / abs(pv) * 100, 2):+.2f}%"
+                                except Exception:
+                                    return ""
+                            ghg_df_display[vc] = ghg_df_display.apply(_var_ghg_row, axis=1)
+
+                            ghg_ordered_cols.extend([pc, cc, vc])
+                            ghg_column_config[pc] = st.column_config.TextColumn(pc, width="small", help=pc)
+                            ghg_column_config[cc] = st.column_config.TextColumn(cc, width="small", help=cc)
+                            ghg_column_config[vc] = st.column_config.TextColumn(vc, disabled=True, width="small", help=vc)
+
+                        # Rendi GHG intensity e Variazione % non editabili nel display.
+                        # Le colonn editable sono tutte eccetto GHG intensity (pc/cc) e var.
+                        ghg_disabled_rows_info = ""
+                        if fat_prev is None or fat_curr is None:
+                            ghg_disabled_rows_info = "ℹ️ Il valore GHG intensity è calcolato automaticamente da (Scope 1 + Scope 2) / Fatturato. Inserire il Fatturato nella tabella Dimensioni (sezione B1)."
+
+                        if ghg_disabled_rows_info:
+                            st.caption(ghg_disabled_rows_info)
+
+                        edited_ghg = st.data_editor(
+                            ghg_df_display[ghg_ordered_cols],
+                            key=f"editor_{b3_ghg_key}_{st.session_state[b3_ghg_num_sites_key]}",
+                            column_config=ghg_column_config,
+                            hide_index=True,
+                            num_rows="fixed",
+                            width='stretch',
+                            disabled=[b3_ghg_col_label, b3_ghg_col_udm] + [_ghg_sede_var_col(s) for s in ghg_site_numbers],
+                        )
+
+                        # Salva solo le righe non-intensity (intensity è calcolata, non persistita)
+                        ghg_editable_cols = [b3_ghg_col_label, b3_ghg_col_udm]
+                        for site_idx in sorted(ghg_site_numbers):
+                            ghg_editable_cols.extend([_ghg_sede_prev_col(site_idx), _ghg_sede_curr_col(site_idx)])
+                        saved_ghg = edited_ghg[[c for c in ghg_editable_cols if c in edited_ghg.columns]].copy()
+                        # Ricalcola e persisti GHG intensity dai valori appena inseriti.
+                        for site_idx in sorted(ghg_site_numbers):
+                            pc = _ghg_sede_prev_col(site_idx)
+                            cc = _ghg_sede_curr_col(site_idx)
+                            try:
+                                s1_prev = _parse_number(saved_ghg.loc[saved_ghg[b3_ghg_col_label] == GHG_SCOPE1_LABEL, pc].values[0])
+                            except Exception:
+                                s1_prev = None
+                            try:
+                                s2_prev = _parse_number(saved_ghg.loc[saved_ghg[b3_ghg_col_label] == GHG_SCOPE2_LABEL, pc].values[0])
+                            except Exception:
+                                s2_prev = None
+                            try:
+                                s1_curr = _parse_number(saved_ghg.loc[saved_ghg[b3_ghg_col_label] == GHG_SCOPE1_LABEL, cc].values[0])
+                            except Exception:
+                                s1_curr = None
+                            try:
+                                s2_curr = _parse_number(saved_ghg.loc[saved_ghg[b3_ghg_col_label] == GHG_SCOPE2_LABEL, cc].values[0])
+                            except Exception:
+                                s2_curr = None
+
+                            prev_intensity = ""
+                            curr_intensity = ""
+                            if s1_prev is not None and s2_prev is not None and fat_prev not in (None, 0):
+                                prev_intensity = f"{(s1_prev + s2_prev) / fat_prev:.6g}"
+                            if s1_curr is not None and s2_curr is not None and fat_curr not in (None, 0):
+                                curr_intensity = f"{(s1_curr + s2_curr) / fat_curr:.6g}"
+
+                            intensity_mask = saved_ghg[b3_ghg_col_label] == GHG_INTENSITY_LABEL
+                            saved_ghg.loc[intensity_mask, pc] = prev_intensity
+                            saved_ghg.loc[intensity_mask, cc] = curr_intensity
+                        saved_ghg = saved_ghg.where(pd.notna(saved_ghg), "")
+                        st.session_state.vsme_disclosure_tables[b3_ghg_key] = saved_ghg
+
+                        if st.button("+ Aggiungi sede", key="b3_ghg_add_site_btn"):
+                            st.session_state[b3_ghg_num_sites_key] += 1
+                            st.rerun()
+
+                    if not b1_is_custom and not b2_is_custom and not b3_is_custom:
                         if disclosure.get("tables"):
                             for table in disclosure["tables"]:
                                 editor_storage_key = f"vsme_table_{pillar_code}_{selected_mode}_{disclosure['code']}_{table['sheet_name']}"
