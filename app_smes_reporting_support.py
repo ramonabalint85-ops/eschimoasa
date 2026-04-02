@@ -466,20 +466,24 @@ def get_company_info(ticker):
 
 # --- COSTANTI VSME ---
 VSME_SCALE_OPTIONS = ["Sì", "Sì, ma con integrazione necessaria", "No, ma pianificato", "No"]
-VSME_PLOT_RESPONSE_ORDER = ["SI", "Si, ma necessita", "No ma pianificato", "No"]
+VSME_PLOT_RESPONSE_ORDER = ["Sì", "Sì, ma con integrazione necessaria", "No, ma pianificato", "No"]
+
+
+def normalize_vsme_response_label(answer):
+    normalized = str(answer or "").strip().lower()
+    if normalized in {"yes", "sì", "si"}:
+        return "Sì"
+    if "integrazione" in normalized or "integration" in normalized:
+        return "Sì, ma con integrazione necessaria"
+    if normalized.startswith("no") and ("pianific" in normalized or "planned" in normalized):
+        return "No, ma pianificato"
+    if normalized == "no":
+        return "No"
+    return str(answer or "").strip()
 
 
 def to_vsme_plot_response_label(answer):
-    normalized = str(answer or "").strip().lower()
-    if normalized in {"sì", "si", "yes"}:
-        return "SI"
-    if "integrazione" in normalized or "integration" in normalized:
-        return "Si, ma necessita"
-    if normalized.startswith("no") and ("pianific" in normalized or "planned" in normalized):
-        return "No ma pianificato"
-    if normalized.startswith("no"):
-        return "No"
-    return str(answer or "").strip()
+    return normalize_vsme_response_label(answer)
 VSME_DEFAULT_FILE = "Gap Analysis Template_VSME_Standard_Tool v3.xlsx"
 VSME_DATA_COLLECTION_FILE = "Raccolta dati VSME_Template app.xlsx"
 VSME_DISCLOSURE_PILLARS = {
@@ -654,7 +658,15 @@ def load_vsme_checklist_from_excel(file_path=VSME_DEFAULT_FILE):
                 elif excel_scale:
                     break
             if len(excel_scale) >= 2:
-                vsme_scale_options = excel_scale
+                normalized_scale = []
+                for option in excel_scale:
+                    normalized_option = normalize_vsme_response_label(option)
+                    if normalized_option and normalized_option not in normalized_scale:
+                        normalized_scale.append(normalized_option)
+                if all(opt in normalized_scale for opt in VSME_SCALE_OPTIONS):
+                    vsme_scale_options = VSME_SCALE_OPTIONS
+                elif len(normalized_scale) >= 2:
+                    vsme_scale_options = normalized_scale
         
         sheet_map = {
             'GEN': 'Checklist_General_Information',
@@ -1094,13 +1106,129 @@ def to_italian_question_label(question_label):
         "hr reporting": "Rendicontazione HR",
         "governance overview": "Panoramica della governance",
         "environmental certifications": "Certificazioni ambientali",
+        "energy consumption": "Consumo energetico",
+        "ghg emissions - scope 1 & 2": "Emissioni GHG - Scope 1 e 2",
     }
     return translation_map.get(normalized, label)
+
+
+def to_italian_disclosure_title(disclosure_code, disclosure_title):
+    title = str(disclosure_title or '').strip()
+    code = str(disclosure_code or '').strip().upper()
+    normalized_title = title.lower()
+
+    if code == "B3" and normalized_title == "energy and greenhouse gas emissions":
+        return "Energia ed emissioni di gas a effetto serra"
+    if code == "B4":
+        return "Inquinamento di acqua, aria e suolo"
+
+    return title
 
 
 def is_interview_management_question(question):
     normalized_question = clean_question_label(question).lower()
     return "interview management esg" in normalized_question
+
+
+def is_b3_energy_consumption_question(question):
+    normalized_question = clean_question_label(question).lower()
+    return "energy consumption" in normalized_question or "consumi energetici" in normalized_question
+
+
+def is_b3_ghg_scope12_question(question):
+    normalized_question = clean_question_label(question).lower()
+    return (
+        ("ghg" in normalized_question and "scope 1" in normalized_question and "scope 2" in normalized_question)
+        or "ghg emissions - scope 1 & 2" in normalized_question
+        or "emissioni ghg scope 1 e scope 2" in normalized_question
+    )
+
+
+def is_b3_checklist_question(question):
+    return is_b3_energy_consumption_question(question) or is_b3_ghg_scope12_question(question)
+
+
+def _latest_site_year_column(df, site_idx=1):
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+
+    pattern = re.compile(rf"^Sede\s+{site_idx}\s+-\s+(\d{{4}})$")
+    matched = []
+    for col in df.columns:
+        col_str = str(col)
+        match = pattern.match(col_str)
+        if match:
+            try:
+                matched.append((int(match.group(1)), col_str))
+            except ValueError:
+                continue
+
+    if not matched:
+        fallback_col = "Sede 1 - 2025"
+        return fallback_col if fallback_col in df.columns else None
+
+    matched.sort(key=lambda item: item[0])
+    return matched[-1][1]
+
+
+def _table_column_completion_state(df, target_col, required_row_labels=None, label_col=None):
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty or target_col not in df.columns:
+        return 'missing'
+
+    work_df = df.copy().where(pd.notna(df), '')
+    if required_row_labels:
+        if not label_col or label_col not in work_df.columns:
+            return 'missing'
+        work_df = work_df[work_df[label_col].astype(str).isin(required_row_labels)]
+        if work_df.empty:
+            return 'missing'
+
+    total_cells = len(work_df.index)
+    if total_cells == 0:
+        return 'missing'
+
+    filled_cells = work_df[target_col].apply(lambda v: str(v).strip() != '').sum()
+    if filled_cells == 0:
+        return 'missing'
+    if filled_cells == total_cells:
+        return 'full'
+    return 'partial'
+
+
+def b3_energy_consumption_auto_answer():
+    tables = st.session_state.get('vsme_disclosure_tables', {})
+    energy_df = tables.get('vsme_table_B3_energia_emissioni')
+    target_col = _latest_site_year_column(energy_df, site_idx=1)
+    table_state = _table_column_completion_state(energy_df, target_col)
+
+    if table_state == 'full':
+        return 'Sì'
+    if table_state == 'partial':
+        return 'Sì, ma con integrazione necessaria'
+    return None
+
+
+def b3_ghg_scope12_auto_answer():
+    tables = st.session_state.get('vsme_disclosure_tables', {})
+    ghg_df = tables.get('vsme_table_B3_ghg_emissioni')
+    target_col = _latest_site_year_column(ghg_df, site_idx=1)
+    required_rows = [
+        "Emissioni GHG Scope 1",
+        "Emissioni GHG Scope 2 (basato sulla localizzazione)",
+        "Intensità GHG",
+    ]
+    table_state = _table_column_completion_state(
+        ghg_df,
+        target_col,
+        required_row_labels=required_rows,
+        label_col="Emissioni di gas a effetto serra",
+    )
+
+    if table_state == 'full':
+        return 'Sì'
+    if table_state == 'partial':
+        return 'Sì, ma con integrazione necessaria'
+    return None
 
 
 def get_question_datapoints(question):
@@ -1120,17 +1248,21 @@ def get_question_datapoints(question):
         return 1
     if is_transition_plan_question(question):
         return 2
+    if is_b3_energy_consumption_question(question):
+        return 1
+    if is_b3_ghg_scope12_question(question):
+        return 3
     match = re.search(r'\((\d+) datapoints\)', str(question or ''))
     return int(match.group(1)) if match else 0
 
 
 def answer_to_status(answer):
-    normalized_answer = str(answer or '').strip().lower()
-    if normalized_answer in {'sì', 'si', 'yes'}:
+    normalized_answer = normalize_vsme_response_label(answer).lower()
+    if normalized_answer in {'sì', 'si'}:
         return 'ready', 0
-    if 'integrazione' in normalized_answer or 'integration' in normalized_answer:
+    if normalized_answer == 'sì, ma con integrazione necessaria':
         return 'partial', 1
-    if normalized_answer.startswith('no'):
+    if normalized_answer in {'no, ma pianificato', 'no'}:
         return 'missing', 2
     return 'partial', 1
 
@@ -1601,9 +1733,12 @@ with t_triage:
                     is_hse_ap_row = is_hse_action_plan_question(q)
                     is_hse_pol_row = is_hse_policies_question(q)
                     is_transition_row = is_transition_plan_question(q)
+                    is_b3_energy_row = is_b3_energy_consumption_question(q)
+                    is_b3_ghg_row = is_b3_ghg_scope12_question(q)
                     is_auto_row = (is_interview_row or is_balance_row or is_hr_row
                                    or is_governance_row or is_env_cert_row
-                                   or is_hse_ap_row or is_hse_pol_row or is_transition_row)
+                                   or is_hse_ap_row or is_hse_pol_row or is_transition_row
+                                   or is_b3_energy_row or is_b3_ghg_row)
 
                     if is_auto_row:
                         auto_datapoints = get_question_datapoints(q)
@@ -1623,6 +1758,10 @@ with t_triage:
                             auto_answer = hse_action_plan_auto_answer()
                         elif is_hse_pol_row:
                             auto_answer = hse_policies_auto_answer()
+                        elif is_b3_energy_row:
+                            auto_answer = b3_energy_consumption_auto_answer()
+                        elif is_b3_ghg_row:
+                            auto_answer = b3_ghg_scope12_auto_answer()
                         else:
                             auto_answer = transition_plan_auto_answer()
 
@@ -1647,6 +1786,11 @@ with t_triage:
                         stored_question = f"{clean_question_label(q)} ({auto_datapoints} datapoints)"
                     else:
                         translated_q = to_italian_question_label(clean_question_label(q))
+                        current_answer = st.session_state.get(answer_key)
+                        if current_answer is not None:
+                            normalized_current = normalize_vsme_response_label(current_answer)
+                            if normalized_current in scale_options and normalized_current != current_answer:
+                                st.session_state[answer_key] = normalized_current
                         val = st.selectbox(
                             f"{display_index}. {translated_q}",
                             scale_options,
@@ -1732,9 +1876,9 @@ with t_triage:
 
         df_distribution = pd.DataFrame(distribution_rows)
         color_map = {
-            "SI": "#2ecc71",
-            "Si, ma necessita": "#f39c12",
-            "No ma pianificato": "#3498db",
+            "Sì": "#2ecc71",
+            "Sì, ma con integrazione necessaria": "#f39c12",
+            "No, ma pianificato": "#3498db",
             "No": "#e74c3c",
         }
 
@@ -1846,6 +1990,17 @@ with t_triage:
                     question_filter=lambda _q: False,
                     manage_cleanup=True,
                 )
+            elif pillar_code == "E" and questions_for_pillar is not None and gap_scale_options is not None:
+                # Pulizia chiavi una volta sola per Ambiente; il rendering filtrato B3 avviene nel relativo tab.
+                render_gap_list(
+                    questions_for_pillar,
+                    pillar_code,
+                    st.container(),
+                    gap_scale_options,
+                    gap_prefix,
+                    question_filter=lambda _q: False,
+                    manage_cleanup=True,
+                )
 
             css_rules = [
                 "font-size: 1rem;",
@@ -1892,14 +2047,16 @@ with t_triage:
 
             for disclosure_tab, disclosure in zip(disclosure_tabs, disclosures):
                 with disclosure_tab:
+                    display_disclosure_title = to_italian_disclosure_title(disclosure.get('code'), disclosure.get('title'))
                     st.markdown(
-                        f"<p style='display:inline-block; font-size:1rem; font-weight:600; margin-bottom:0.45rem; padding:0.25rem 0.6rem; background:{style['badge_bg']}; color:{style['badge_text']}; border-radius:6px;'>{disclosure['code']} - {disclosure['title']}</p>",
+                        f"<p style='display:inline-block; font-size:1rem; font-weight:600; margin-bottom:0.45rem; padding:0.25rem 0.6rem; background:{style['badge_bg']}; color:{style['badge_text']}; border-radius:6px;'>{disclosure['code']} - {display_disclosure_title}</p>",
                         unsafe_allow_html=True,
                     )
 
                     b1_is_custom = disclosure['code'] == "B1"
                     b2_is_custom = disclosure['code'] == "B2"
                     b3_is_custom = disclosure['code'] == "B3"
+                    b4_is_custom = disclosure['code'] == "B4"
                     if b1_is_custom:
                         st.radio(
                             'Informazioni omesse in quanto ritenute riservate o sensibili?',
@@ -2257,7 +2414,7 @@ with t_triage:
                         prev_year = compilation_year - 1
                         prev_prev_year = compilation_year - 2
                         b3_key = 'vsme_table_B3_energia_emissioni'
-                        b3_col_label = "Energia e emissioni di gas a effetto serra"
+                        b3_col_label = "Energia"
                         b3_col_udm = "UdM"
                         b3_rows = [
                             ("Energia elettrica acquistata senza GdO", "kWh"),
@@ -2402,16 +2559,16 @@ with t_triage:
                         b3_ghg_col_label = "Emissioni di gas a effetto serra"
                         b3_ghg_col_udm = "UdM"
 
-                        # 4 righe fisse; GHG intensity è auto-calcolata.
+                        # 4 righe fisse; Intensità GHG è auto-calcolata.
                         b3_ghg_rows = [
                             ("Emissioni GHG Scope 1", "ton CO2eq"),
-                            ("Emissioni GHG Scope 2 (location-based)", "ton CO2eq"),
-                            ("Emissioni GHG Scope 3 (location-based)", "ton CO2eq"),
-                            ("GHG intensity", "ton CO2eq/€"),
+                            ("Emissioni GHG Scope 2 (basato sulla localizzazione)", "ton CO2eq"),
+                            ("Emissioni GHG Scope 3 (basato sulla localizzazione)", "ton CO2eq"),
+                            ("Intensità GHG", "ton CO2eq/€"),
                         ]
                         GHG_SCOPE1_LABEL = "Emissioni GHG Scope 1"
-                        GHG_SCOPE2_LABEL = "Emissioni GHG Scope 2 (location-based)"
-                        GHG_INTENSITY_LABEL = "GHG intensity"
+                        GHG_SCOPE2_LABEL = "Emissioni GHG Scope 2 (basato sulla localizzazione)"
+                        GHG_INTENSITY_LABEL = "Intensità GHG"
 
                         def _ghg_sede_prev_col(site_idx):
                             return f"Sede {site_idx} - {prev_prev_year}"
@@ -2502,7 +2659,7 @@ with t_triage:
                             except Exception:
                                 return None
 
-                        # Costruisci visualizzazione con GHG intensity calcolata e variazioni.
+                        # Costruisci visualizzazione con Intensità GHG calcolata e variazioni.
                         ghg_ordered_cols = [b3_ghg_col_label, b3_ghg_col_udm]
                         ghg_column_config = {
                             b3_ghg_col_label: st.column_config.TextColumn(
@@ -2531,7 +2688,7 @@ with t_triage:
                             ghg_df_display[pc] = ghg_df[pc].copy()
                             ghg_df_display[cc] = ghg_df[cc].copy()
 
-                            # Calcola GHG intensity: (Scope1 + Scope2) / Fatturato
+                            # Calcola Intensità GHG: (Scope1 + Scope2) / Fatturato
                             try:
                                 s1_prev = _parse_number(ghg_df.loc[ghg_df[b3_ghg_col_label] == GHG_SCOPE1_LABEL, pc].values[0])
                             except Exception:
@@ -2558,7 +2715,7 @@ with t_triage:
                             else:
                                 ghg_intensity_curr = ""
 
-                            # Forza i valori di GHG intensity nel display df
+                            # Forza i valori di Intensità GHG nel display df
                             intensity_mask = ghg_df_display[b3_ghg_col_label] == GHG_INTENSITY_LABEL
                             ghg_df_display.loc[intensity_mask, pc] = ghg_intensity_prev
                             ghg_df_display.loc[intensity_mask, cc] = ghg_intensity_curr
@@ -2580,11 +2737,11 @@ with t_triage:
                             ghg_column_config[cc] = st.column_config.TextColumn(cc, width="small", help=cc)
                             ghg_column_config[vc] = st.column_config.TextColumn(vc, disabled=True, width="small", help=vc)
 
-                        # Rendi GHG intensity e Variazione % non editabili nel display.
-                        # Le colonn editable sono tutte eccetto GHG intensity (pc/cc) e var.
+                        # Rendi Intensità GHG e Variazione % non editabili nel display.
+                        # Le colonn editable sono tutte eccetto Intensità GHG (pc/cc) e var.
                         ghg_disabled_rows_info = ""
                         if fat_prev is None or fat_curr is None:
-                            ghg_disabled_rows_info = "ℹ️ Il valore GHG intensity è calcolato automaticamente da (Scope 1 + Scope 2) / Fatturato. Inserire il Fatturato nella tabella Dimensioni (sezione B1)."
+                            ghg_disabled_rows_info = "ℹ️ Il valore Intensità GHG è calcolato automaticamente da (Scope 1 + Scope 2) / Fatturato. Inserire il Fatturato nella tabella Dimensioni (sezione B1)."
 
                         if ghg_disabled_rows_info:
                             st.caption(ghg_disabled_rows_info)
@@ -2604,7 +2761,7 @@ with t_triage:
                         for site_idx in sorted(ghg_site_numbers):
                             ghg_editable_cols.extend([_ghg_sede_prev_col(site_idx), _ghg_sede_curr_col(site_idx)])
                         saved_ghg = edited_ghg[[c for c in ghg_editable_cols if c in edited_ghg.columns]].copy()
-                        # Ricalcola e persisti GHG intensity dai valori appena inseriti.
+                        # Ricalcola e persisti Intensità GHG dai valori appena inseriti.
                         for site_idx in sorted(ghg_site_numbers):
                             pc = _ghg_sede_prev_col(site_idx)
                             cc = _ghg_sede_curr_col(site_idx)
@@ -2642,7 +2799,123 @@ with t_triage:
                             st.session_state[b3_ghg_num_sites_key] += 1
                             st.rerun()
 
-                    if not b1_is_custom and not b2_is_custom and not b3_is_custom:
+                        if pillar_code == "E" and questions_for_pillar is not None and gap_scale_options is not None:
+                            st.markdown("---")
+                            st.markdown("##### Documenti e informazioni - Disclosure B3")
+                            render_gap_list(
+                                questions_for_pillar,
+                                pillar_code,
+                                st.container(),
+                                gap_scale_options,
+                                gap_prefix,
+                                question_filter=is_b3_checklist_question,
+                                manage_cleanup=False,
+                            )
+                            render_disclosure_readiness(
+                                questions_for_pillar,
+                                pillar_code,
+                                gap_prefix,
+                                "Disclosure B3",
+                                question_filter=is_b3_checklist_question,
+                            )
+
+                    elif b4_is_custom:
+                        compilation_year = datetime.now().year
+                        prev_year = str(compilation_year - 2)
+                        curr_year = str(compilation_year - 1)
+
+                        b4_key = "vsme_table_B4_inquinamento"
+                        b4_columns = [
+                            "Inquinante",
+                            "Rilasciato in",
+                            f"Emissioni [kg] - {prev_year}",
+                            f"Emissioni [kg] - {curr_year}",
+                        ]
+                        b4_release_options = ["Acqua", "Aria", "Suolo"]
+
+                        if b4_key not in st.session_state.vsme_disclosure_tables:
+                            st.session_state.vsme_disclosure_tables[b4_key] = pd.DataFrame([
+                                {
+                                    "Inquinante": "",
+                                    "Rilasciato in": "Acqua",
+                                    f"Emissioni [kg] - {prev_year}": "",
+                                    f"Emissioni [kg] - {curr_year}": "",
+                                },
+                                {
+                                    "Inquinante": "",
+                                    "Rilasciato in": "Aria",
+                                    f"Emissioni [kg] - {prev_year}": "",
+                                    f"Emissioni [kg] - {curr_year}": "",
+                                },
+                                {
+                                    "Inquinante": "",
+                                    "Rilasciato in": "Suolo",
+                                    f"Emissioni [kg] - {prev_year}": "",
+                                    f"Emissioni [kg] - {curr_year}": "",
+                                },
+                            ])
+
+                        b4_df = st.session_state.vsme_disclosure_tables[b4_key].copy()
+                        for col in b4_columns:
+                            if col not in b4_df.columns:
+                                b4_df[col] = ""
+                        b4_df = b4_df[b4_columns].where(pd.notna(b4_df[b4_columns]), "")
+                        if b4_df.empty:
+                            b4_df = pd.DataFrame([
+                                {
+                                    "Inquinante": "",
+                                    "Rilasciato in": "Acqua",
+                                    f"Emissioni [kg] - {prev_year}": "",
+                                    f"Emissioni [kg] - {curr_year}": "",
+                                }
+                            ])
+                        b4_df["Rilasciato in"] = b4_df["Rilasciato in"].apply(
+                            lambda value: value if str(value).strip() in b4_release_options else "Acqua"
+                        )
+
+                        b4_column_config = {
+                            "Inquinante": st.column_config.TextColumn("Inquinante", width="medium"),
+                            "Rilasciato in": st.column_config.SelectboxColumn(
+                                "Rilasciato in",
+                                options=b4_release_options,
+                                required=True,
+                                width="small",
+                            ),
+                            f"Emissioni [kg] - {prev_year}": st.column_config.TextColumn(
+                                f"Emissioni [kg] - {prev_year}",
+                                width="small",
+                            ),
+                            f"Emissioni [kg] - {curr_year}": st.column_config.TextColumn(
+                                f"Emissioni [kg] - {curr_year}",
+                                width="small",
+                            ),
+                        }
+
+                        edited_b4 = st.data_editor(
+                            b4_df,
+                            key=f"editor_{b4_key}",
+                            column_config=b4_column_config,
+                            hide_index=True,
+                            num_rows="fixed",
+                            width='stretch',
+                        )
+                        st.session_state.vsme_disclosure_tables[b4_key] = edited_b4.where(pd.notna(edited_b4), "")
+
+                        if st.button("Aggiungi inquinante", key="b4_add_row_btn"):
+                            current_b4 = st.session_state.vsme_disclosure_tables[b4_key].copy()
+                            new_row = pd.DataFrame([
+                                {
+                                    "Inquinante": "",
+                                    "Rilasciato in": "Acqua",
+                                    f"Emissioni [kg] - {prev_year}": "",
+                                    f"Emissioni [kg] - {curr_year}": "",
+                                }
+                            ])
+                            current_b4 = pd.concat([current_b4, new_row], ignore_index=True)
+                            st.session_state.vsme_disclosure_tables[b4_key] = current_b4
+                            st.rerun()
+
+                    if not b1_is_custom and not b2_is_custom and not b3_is_custom and not b4_is_custom:
                         if disclosure.get("tables"):
                             for table in disclosure["tables"]:
                                 editor_storage_key = f"vsme_table_{pillar_code}_{selected_mode}_{disclosure['code']}_{table['sheet_name']}"
@@ -2732,9 +3005,9 @@ with t_triage:
             "G": "Governance",
         }
         response_colors = {
-            "SI": "#2ecc71",
-            "Si, ma necessita": "#f39c12",
-            "No ma pianificato": "#3498db",
+            "Sì": "#2ecc71",
+            "Sì, ma con integrazione necessaria": "#f39c12",
+            "No, ma pianificato": "#3498db",
             "No": "#e74c3c",
         }
         default_palette = ["#2ecc71", "#f39c12", "#3498db", "#e74c3c", "#9b59b6", "#16a085"]
@@ -2949,8 +3222,15 @@ with t_triage:
                 )
             else:
                 render_vsme_disclosure_tables("GEN", selected_mode, tab_gen, disclosure_reference)
-            render_vsme_disclosure_tables("E", selected_mode, c_v_E, disclosure_reference)
-            render_gap_list(module_questions["E"], "E", c_v_E, vsme_scale_options, module_prefix)
+            render_vsme_disclosure_tables(
+                "E",
+                selected_mode,
+                c_v_E,
+                disclosure_reference,
+                questions_for_pillar=module_questions["E"],
+                gap_scale_options=vsme_scale_options,
+                gap_prefix=module_prefix,
+            )
             render_vsme_disclosure_tables("S", selected_mode, c_v_S, disclosure_reference)
             render_gap_list(module_questions["S"], "S", c_v_S, vsme_scale_options, module_prefix)
             render_vsme_disclosure_tables("G", selected_mode, c_v_G, disclosure_reference)
@@ -3075,53 +3355,6 @@ with t_triage:
                 remaining_cols = [col for col in remaining_cols if col != "% sul totale dataset"]
                 all_details_table = all_details_table[existing_order + remaining_cols]
             st.dataframe(all_details_table, width='stretch', hide_index=True)
-
-        if selected_mode in ["base", "comprehensive"]:
-            tab_mapping = {
-                "E": c_v_E,
-                "S": c_v_S,
-                "G": c_v_G,
-            }
-            pillar_display_title = results.get("pillar_display_title", pillar_titles)
-
-            for pillar, tab in tab_mapping.items():
-                with tab:
-                    df_summary = results["summary"].get(pillar, pd.DataFrame())
-                    df_details = results["details"].get(pillar, pd.DataFrame())
-                    if df_summary.empty:
-                        continue
-                    section_title = pillar_display_title.get(pillar, pillar_titles.get(pillar, pillar))
-                    st.subheader(f"📊 {section_title}")
-                    fig = px.bar(
-                        df_summary,
-                        x="Risposta",
-                        y="% sul totale checklist",
-                        color="Risposta",
-                        text=df_summary["% sul totale checklist"].apply(lambda x: f"{x:.2f}%"),
-                        color_discrete_map=response_colors,
-                    )
-                    fig.update_layout(
-                        showlegend=False,
-                        yaxis_title="Percentuale sul totale checklist",
-                        xaxis_title="Risposta",
-                    )
-                    st.plotly_chart(fig, width='stretch', key=f"vsme_bar_{selected_mode}_{pillar}")
-                    details_table = df_details.copy()
-                    if len(details_table) > 0:
-                        details_table["% sul totale checklist"] = details_table["% sul totale checklist"].apply(lambda x: f"{x:.2f}%")
-                        details_columns_order = [
-                            "Modulo",
-                            "Checklist",
-                            "Domanda",
-                            "Datapoints",
-                            "% sul totale checklist",
-                            "Risposta",
-                        ]
-                        existing_order = [col for col in details_columns_order if col in details_table.columns]
-                        remaining_cols = [col for col in details_table.columns if col not in existing_order]
-                        remaining_cols = [col for col in remaining_cols if col != "% sul totale dataset"]
-                        details_table = details_table[existing_order + remaining_cols]
-                    st.dataframe(details_table, width='stretch', hide_index=True)
 
 # =====================================================================
 # TAB 2: ANALISI RISCHI (MAPPA FISICA, IPCC E NGFS)
