@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Supporto alla Rendicontazione PMI - Offline</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #ffffff;
+      --border: #d9e2ef;
+      --text: #16324f;
+      --muted: #5b718a;
+      --green: #1f9d55;
+      --amber: #c17d00;
+      --blue: #1d70b8;
+      --red: #c0392b;
+      --shadow: 0 10px 25px rgba(22, 50, 79, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      background: linear-gradient(135deg, #16324f, #24507a);
+      color: white;
+      padding: 24px 18px;
+    }
+    header h1 {
+      margin: 0 0 6px;
+      font-size: 1.8rem;
+    }
+    header p {
+      margin: 0;
+      color: #deebf7;
+    }
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+    .banner {
+      background: #eef8ef;
+      border: 1px solid #b7dfbf;
+      color: #1d5f2f;
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin-bottom: 18px;
+      font-size: 0.96rem;
+    }
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+    .grid-2 {
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    }
+    .grid-4 {
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      padding: 16px;
+    }
+    .card h2, .card h3 {
+      margin-top: 0;
+    }
+    label {
+      display: block;
+      font-weight: 700;
+      margin-bottom: 6px;
+      font-size: 0.94rem;
+    }
+    input, select, textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #c8d5e6;
+      border-radius: 10px;
+      background: white;
+      color: var(--text);
+      margin-bottom: 12px;
+    }
+    textarea { min-height: 88px; }
+    .metric {
+      border-radius: 12px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      background: #fbfdff;
+    }
+    .metric .label {
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-bottom: 6px;
+    }
+    .metric .value {
+      font-size: 1.15rem;
+      font-weight: 700;
+    }
+    .pill {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      margin-right: 6px;
+      margin-bottom: 6px;
+      color: white;
+    }
+    .ok { background: var(--green); }
+    .mid { background: var(--amber); }
+    .plan { background: var(--blue); }
+    .no { background: var(--red); }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-weight: 700;
+      cursor: pointer;
+      background: #24507a;
+      color: white;
+    }
+    button.secondary {
+      background: #f0f4f9;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      text-align: left;
+      border-bottom: 1px solid #e6edf5;
+      padding: 10px 8px;
+      vertical-align: top;
+    }
+    th {
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    .small {
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    .progress {
+      width: 100%;
+      height: 12px;
+      border-radius: 999px;
+      background: #e6edf5;
+      overflow: hidden;
+    }
+    .progress > span {
+      display: block;
+      height: 100%;
+      background: linear-gradient(90deg, #2ecc71, #f39c12);
+      width: 0%;
+    }
+    footer {
+      padding: 20px 0 32px;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Supporto alla Rendicontazione PMI - Offline Lite</h1>
+    <p>Versione locale, autonoma e utilizzabile senza internet. Nessun dato esce dal browser.</p>
+  </header>
+
+  <div class="wrap">
+    <div class="banner">
+      ✅ <strong>Uso offline:</strong> salva questo file e aprilo con doppio clic oppure tramite un link <code>file:///...</code>. Funziona senza connessione internet.
+    </div>
+
+    <div class="grid grid-2">
+      <section class="card">
+        <h2>1. Profilo azienda</h2>
+        <label for="companyName">Ragione sociale</label>
+        <input id="companyName" type="text" placeholder="Es. Esempio Srl" />
+
+        <label for="area">Perimetro sede principale</label>
+        <select id="area">
+          <option value="UE">UE</option>
+          <option value="Extra-UE">Extra-UE</option>
+        </select>
+
+        <label for="branchEu">Succursale/attività UE rilevante</label>
+        <select id="branchEu">
+          <option value="No">No</option>
+          <option value="Sì">Sì</option>
+        </select>
+
+        <label for="employees">Dipendenti</label>
+        <input id="employees" type="number" min="0" placeholder="Es. 120" />
+
+        <label for="revenue">Ricavi annui (€)</label>
+        <input id="revenue" type="number" min="0" step="0.01" placeholder="Es. 3500000" />
+
+        <label for="assets">Totale attivo (€)</label>
+        <input id="assets" type="number" min="0" step="0.01" placeholder="Es. 1800000" />
+
+        <label for="notes">Note operative</label>
+        <textarea id="notes" placeholder="Appunti, fonti dati, owner interni..."></textarea>
+      </section>
+
+      <section class="card">
+        <h2>2. Emissioni e stress test rapido</h2>
+        <label for="scope1">Scope 1 (tCO2e)</label>
+        <input id="scope1" type="number" min="0" step="0.01" placeholder="0" />
+
+        <label for="scope2">Scope 2 (tCO2e)</label>
+        <input id="scope2" type="number" min="0" step="0.01" placeholder="0" />
+
+        <label for="scope3">Scope 3 (tCO2e)</label>
+        <input id="scope3" type="number" min="0" step="0.01" placeholder="0" />
+
+        <label for="policyMultiplier">Moltiplicatore severità normativa</label>
+        <input id="policyMultiplier" type="range" min="1" max="3" step="0.1" value="1.5" />
+        <div class="small">Valore attuale: <strong id="policyLabel">1.5x</strong></div>
+
+        <div class="actions">
+          <button id="saveBtn">Salva nel browser</button>
+          <button id="downloadBtn" class="secondary">Scarica JSON</button>
+          <button id="csvBtn" class="secondary">Scarica CSV checklist</button>
+          <button id="resetBtn" class="secondary">Resetta</button>
+        </div>
+        <div style="margin-top:10px">
+          <label for="uploadJson">Carica backup JSON</label>
+          <input id="uploadJson" type="file" accept="application/json" />
+        </div>
+      </section>
+    </div>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>3. Esito rapido</h2>
+      <div class="grid grid-4">
+        <div class="metric">
+          <div class="label">Esito normativo</div>
+          <div id="statusNormativo" class="value">—</div>
+        </div>
+        <div class="metric">
+          <div class="label">Percorso suggerito</div>
+          <div id="percorso" class="value">—</div>
+        </div>
+        <div class="metric">
+          <div class="label">Preparazione</div>
+          <div id="readiness" class="value">0%</div>
+        </div>
+        <div class="metric">
+          <div class="label">Costo carbonio stimato</div>
+          <div id="carbonCost" class="value">€ 0</div>
+        </div>
+      </div>
+
+      <div style="margin-top:14px;">
+        <div class="small">Completezza dati</div>
+        <div class="progress"><span id="completenessBar"></span></div>
+        <div id="completenessText" class="small" style="margin-top:6px;">0%</div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>4. Checklist VSME sintetica</h2>
+      <p class="small">Questa copia offline serve per un pre-assessment rapido, con salvataggio locale e senza dipendenze esterne.</p>
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 18%">Pillar</th>
+            <th>Domanda</th>
+            <th style="width: 24%">Risposta</th>
+          </tr>
+        </thead>
+        <tbody id="checklistBody"></tbody>
+      </table>
+
+      <div style="margin-top:14px;">
+        <span class="pill ok" id="countYes">Sì: 0</span>
+        <span class="pill mid" id="countPartial">Sì, ma con integrazione: 0</span>
+        <span class="pill plan" id="countPlanned">No, ma pianificato: 0</span>
+        <span class="pill no" id="countNo">No: 0</span>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>5. Prossime azioni consigliate</h2>
+      <ul id="actionsList">
+        <li>Compila il profilo aziendale per ottenere una classificazione iniziale.</li>
+      </ul>
+    </section>
+
+    <footer>
+      File locale: <code>supporto_rendicontazione_offline.html</code> · Compatibile con browser moderni · Nessuna connessione richiesta.
+    </footer>
+  </div>
+
+  <script>
+    const STORAGE_KEY = 'supporto_rendicontazione_offline_v1';
+    const ANSWERS = ['Sì', 'Sì, ma con integrazione necessaria', 'No, ma pianificato', 'No'];
+    const SCORE_MAP = {
+      'Sì': 1,
+      'Sì, ma con integrazione necessaria': 0.6,
+      'No, ma pianificato': 0.25,
+      'No': 0,
+      '': 0
+    };
+
+    const QUESTIONS = [
+      { pillar: 'GEN', text: 'Anagrafica aziendale e perimetro disponibili?' },
+      { pillar: 'GEN', text: 'Governance minima della rendicontazione definita?' },
+      { pillar: 'E', text: 'Consumi energetici raccolti per l’ultimo anno?' },
+      { pillar: 'E', text: 'Emissioni GHG Scope 1 e 2 disponibili?' },
+      { pillar: 'E', text: 'Azioni ambientali o piano di transizione identificati?' },
+      { pillar: 'S', text: 'Dati dipendenti, turnover e formazione disponibili?' },
+      { pillar: 'S', text: 'Policy salute e sicurezza formalizzate?' },
+      { pillar: 'G', text: 'Codice etico o policy anticorruzione presenti?' },
+      { pillar: 'G', text: 'Ruoli e responsabilità ESG assegnati?' }
+    ];
+
+    function euro(value) {
+      const num = Number(value || 0);
+      return '€ ' + num.toLocaleString('it-IT', { maximumFractionDigits: 0 });
+    }
+
+    function value(id) {
+      return document.getElementById(id).value;
+    }
+
+    function numeric(id) {
+      const raw = parseFloat(document.getElementById(id).value);
+      return Number.isFinite(raw) ? raw : 0;
+    }
+
+    function buildChecklist() {
+      const body = document.getElementById('checklistBody');
+      body.innerHTML = '';
+      QUESTIONS.forEach((item, index) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong>${item.pillar}</strong></td>
+          <td>${item.text}</td>
+          <td>
+            <select data-question-index="${index}" class="answer-select">
+              <option value="">Seleziona...</option>
+              ${ANSWERS.map(answer => `<option value="${answer}">${answer}</option>`).join('')}
+            </select>
+          </td>
+        `;
+        body.appendChild(tr);
+      });
+    }
+
+    function collectState() {
+      const answers = {};
+      document.querySelectorAll('.answer-select').forEach(select => {
+        answers[select.dataset.questionIndex] = select.value;
+      });
+      return {
+        companyName: value('companyName'),
+        area: value('area'),
+        branchEu: value('branchEu'),
+        employees: value('employees'),
+        revenue: value('revenue'),
+        assets: value('assets'),
+        notes: value('notes'),
+        scope1: value('scope1'),
+        scope2: value('scope2'),
+        scope3: value('scope3'),
+        policyMultiplier: value('policyMultiplier'),
+        answers
+      };
+    }
+
+    function applyState(state) {
+      if (!state) return;
+      ['companyName', 'area', 'branchEu', 'employees', 'revenue', 'assets', 'notes', 'scope1', 'scope2', 'scope3', 'policyMultiplier']
+        .forEach(id => {
+          if (state[id] !== undefined && document.getElementById(id)) {
+            document.getElementById(id).value = state[id];
+          }
+        });
+      document.querySelectorAll('.answer-select').forEach(select => {
+        const idx = select.dataset.questionIndex;
+        if (state.answers && state.answers[idx] !== undefined) {
+          select.value = state.answers[idx];
+        }
+      });
+      updateSummary();
+    }
+
+    function saveLocal() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(collectState()));
+        alert('Dati salvati nel browser.');
+      } catch (error) {
+        alert('Salvataggio locale non disponibile in questo browser.');
+      }
+    }
+
+    function downloadJson() {
+      const blob = new Blob([JSON.stringify(collectState(), null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'supporto_rendicontazione_offline_backup.json';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    function downloadCsv() {
+      const rows = [['Pillar', 'Domanda', 'Risposta']];
+      document.querySelectorAll('.answer-select').forEach(select => {
+        const idx = Number(select.dataset.questionIndex);
+        rows.push([QUESTIONS[idx].pillar, QUESTIONS[idx].text, select.value || '']);
+      });
+      const csv = rows.map(row => row.map(cell => `"${String(cell).replaceAll('"', '""')}"`).join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'checklist_vsme_offline.csv';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    function resetAll() {
+      if (!confirm('Vuoi davvero cancellare i dati locali di questa copia offline?')) return;
+      document.querySelectorAll('input, textarea, select').forEach(el => {
+        if (el.type === 'range') {
+          el.value = 1.5;
+        } else if (el.tagName === 'SELECT') {
+          el.selectedIndex = 0;
+        } else {
+          el.value = '';
+        }
+      });
+      document.getElementById('area').value = 'UE';
+      document.getElementById('branchEu').value = 'No';
+      localStorage.removeItem(STORAGE_KEY);
+      updateSummary();
+    }
+
+    function loadFromFile(file) {
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = event => {
+        try {
+          const parsed = JSON.parse(event.target.result);
+          applyState(parsed);
+          alert('Backup caricato correttamente.');
+        } catch (error) {
+          alert('File JSON non valido.');
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    function updateSummary() {
+      const multiplier = numeric('policyMultiplier') || 1.5;
+      document.getElementById('policyLabel').textContent = multiplier.toFixed(1) + 'x';
+
+      const employees = numeric('employees');
+      const revenue = numeric('revenue');
+      const assets = numeric('assets');
+      const totalEmissions = numeric('scope1') + numeric('scope2') + numeric('scope3');
+      const carbonPrice = 85 * multiplier;
+      const carbonCost = totalEmissions * carbonPrice;
+
+      let status = 'Percorso volontario VSME';
+      let path = 'Percorso A';
+      const area = value('area');
+      const branchEu = value('branchEu');
+
+      if (area === 'Extra-UE') {
+        path = 'Percorso B';
+        status = branchEu === 'Sì'
+          ? 'Valutare impatto UE e richieste gruppo/filiera'
+          : 'Pre-assessment volontario per gruppo extra-UE';
+      }
+
+      if (employees >= 250 || revenue >= 50000000 || assets >= 25000000) {
+        status = 'Profilo da verificare per obblighi più strutturati';
+      }
+
+      const requiredFields = ['companyName', 'employees', 'revenue', 'assets', 'scope1', 'scope2'];
+      const filledFields = requiredFields.filter(id => String(value(id)).trim() !== '').length;
+
+      let totalScore = 0;
+      let answered = 0;
+      let countYes = 0;
+      let countPartial = 0;
+      let countPlanned = 0;
+      let countNo = 0;
+
+      document.querySelectorAll('.answer-select').forEach(select => {
+        const answer = select.value || '';
+        if (answer) answered += 1;
+        totalScore += SCORE_MAP[answer] || 0;
+        if (answer === 'Sì') countYes += 1;
+        if (answer === 'Sì, ma con integrazione necessaria') countPartial += 1;
+        if (answer === 'No, ma pianificato') countPlanned += 1;
+        if (answer === 'No') countNo += 1;
+      });
+
+      const readiness = QUESTIONS.length ? Math.round((totalScore / QUESTIONS.length) * 100) : 0;
+      const completeness = Math.round(((filledFields + answered) / (requiredFields.length + QUESTIONS.length)) * 100);
+
+      document.getElementById('statusNormativo').textContent = status;
+      document.getElementById('percorso').textContent = path;
+      document.getElementById('readiness').textContent = readiness + '%';
+      document.getElementById('carbonCost').textContent = euro(carbonCost);
+      document.getElementById('completenessBar').style.width = completeness + '%';
+      document.getElementById('completenessText').textContent = completeness + '% di dati disponibili';
+
+      document.getElementById('countYes').textContent = 'Sì: ' + countYes;
+      document.getElementById('countPartial').textContent = 'Sì, ma con integrazione: ' + countPartial;
+      document.getElementById('countPlanned').textContent = 'No, ma pianificato: ' + countPlanned;
+      document.getElementById('countNo').textContent = 'No: ' + countNo;
+
+      const actions = [];
+      if (!value('companyName')) actions.push('Inserire la ragione sociale e completare il profilo azienda.');
+      if (countNo > 0) actions.push('Priorità alta: colmare i punti con risposta “No”.');
+      if (countPartial > 0) actions.push('Raccogliere prove documentali per gli elementi parziali.');
+      if (numeric('scope1') + numeric('scope2') === 0) actions.push('Inserire almeno Scope 1 e Scope 2 per lo stress test rapido.');
+      if (actions.length === 0) actions.push('Profilo ben impostato: esportare il backup JSON e usarlo come base di lavoro.');
+
+      const list = document.getElementById('actionsList');
+      list.innerHTML = actions.map(item => `<li>${item}</li>`).join('');
+    }
+
+    buildChecklist();
+
+    document.addEventListener('input', updateSummary);
+    document.addEventListener('change', updateSummary);
+    document.getElementById('saveBtn').addEventListener('click', saveLocal);
+    document.getElementById('downloadBtn').addEventListener('click', downloadJson);
+    document.getElementById('csvBtn').addEventListener('click', downloadCsv);
+    document.getElementById('resetBtn').addEventListener('click', resetAll);
+    document.getElementById('uploadJson').addEventListener('change', event => loadFromFile(event.target.files[0]));
+
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) applyState(JSON.parse(saved));
+      else updateSummary();
+    } catch (error) {
+      updateSummary();
+    }
+  </script>
+</body>
+</html>
