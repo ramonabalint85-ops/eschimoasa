@@ -34,7 +34,11 @@ env/
 
 # Cache
 .yfinance_cache/
-.streamlit/
+.saved_projects/
+.offline_full_data/
+.streamlit/*
+!.streamlit/
+!.streamlit/config.toml
 
 # OS
 .DS_Store

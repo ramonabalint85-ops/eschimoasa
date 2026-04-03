@@ -20,3 +20,7 @@
 
 ## Nota
 Questa è una copia **offline lite** separata dalla app Streamlit principale `app_smes_reporting_support.py`, che non viene modificata.
+
+## Versione offline completa
+
+Se vuoi usare tutte le tab della app Streamlit anche senza internet, usa la variante completa documentata in `OFFLINE_FULL_USAGE.md` e avviala con `./open_offline_full_app.sh`.

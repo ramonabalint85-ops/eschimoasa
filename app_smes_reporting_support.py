@@ -16,16 +16,24 @@ import re
 import requests
 from datetime import datetime, timedelta
 from functools import lru_cache
+from pathlib import Path
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="Supporto alla Rendicontazione PMI", layout="wide")
+APP_PAGE_TITLE = os.getenv("SMES_REPORTING_PAGE_TITLE", "Supporto alla Rendicontazione PMI")
+APP_DISPLAY_TITLE = os.getenv("SMES_REPORTING_DISPLAY_TITLE", "🌍 Supporto alla Rendicontazione PMI")
+OFFLINE_MODE = os.getenv("SMES_REPORTING_OFFLINE_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+st.set_page_config(page_title=APP_PAGE_TITLE, layout="wide")
 
 # --- CACHE PERSISTENTE E THROTTLING (Anti-Rate-Limiting) ---
-CACHE_DIR = ".yfinance_cache"
+APP_ROOT = Path(__file__).resolve().parent
+APP_DATA_ROOT = Path(os.getenv("SMES_REPORTING_DATA_DIR", str(APP_ROOT))).expanduser()
+CACHE_DIR = str(APP_DATA_ROOT / ".yfinance_cache")
 CACHE_TIMEOUT_HOURS = 24
 THROTTLE_DELAY = 2
-PROJECTS_DIR = ".saved_projects"
+PROJECTS_DIR = str(APP_DATA_ROOT / ".saved_projects")
 
+os.makedirs(APP_DATA_ROOT, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(PROJECTS_DIR, exist_ok=True)
 
@@ -266,6 +274,19 @@ def save_project(project_name):
     return save_project_payload(payload)
 
 
+def export_project_snapshot(project_name=None):
+    resolved_name = (
+        (project_name or "").strip()
+        or st.session_state.get('current_project_name', '').strip()
+        or st.session_state.get('company_name', '').strip()
+        or "progetto"
+    )
+    payload = normalize_project_payload(build_project_payload(resolved_name), fallback_name=resolved_name)
+    file_name = f"{sanitize_project_name(payload['project_name'])}.json"
+    file_bytes = json.dumps(payload, ensure_ascii=False, indent=2).encode('utf-8')
+    return file_name, file_bytes
+
+
 def list_saved_projects():
     projects = []
     for filename in sorted(os.listdir(PROJECTS_DIR)):
@@ -394,6 +415,8 @@ def save_to_cache(ticker, data):
 
 def retry_with_backoff(func, ticker, max_retries=3):
     """Riprova con exponential backoff"""
+    if OFFLINE_MODE:
+        return None
     for attempt in range(max_retries):
         try:
             time.sleep(THROTTLE_DELAY)
@@ -441,6 +464,9 @@ def _fetch_from_yfinance(ticker):
 def get_company_info(ticker):
     """Recupera i dati dell'azienda con cache e retry"""
     ticker = ticker.upper()
+
+    if OFFLINE_MODE:
+        return load_from_cache(ticker)
     
     # 1. Prova cache locale
     if is_cache_valid(ticker):
@@ -465,8 +491,8 @@ def get_company_info(ticker):
 # --- CONFIGURAZIONE PAGINA (originale) ---
 
 # --- COSTANTI VSME ---
-VSME_SCALE_OPTIONS = ["Sì", "Sì, ma con integrazione necessaria", "No, ma pianificato", "No"]
-VSME_PLOT_RESPONSE_ORDER = ["Sì", "Sì, ma con integrazione necessaria", "No, ma pianificato", "No"]
+VSME_SCALE_OPTIONS = ["Sì", "Sì, ma necessita integrazione", "No, ma pianificato", "No"]
+VSME_PLOT_RESPONSE_ORDER = ["Sì", "Sì, ma necessita integrazione", "No, ma pianificato", "No"]
 
 
 def normalize_vsme_response_label(answer):
@@ -474,7 +500,7 @@ def normalize_vsme_response_label(answer):
     if normalized in {"yes", "sì", "si"}:
         return "Sì"
     if "integrazione" in normalized or "integration" in normalized:
-        return "Sì, ma con integrazione necessaria"
+        return "Sì, ma necessita integrazione"
     if normalized.startswith("no") and ("pianific" in normalized or "planned" in normalized):
         return "No, ma pianificato"
     if normalized == "no":
@@ -848,8 +874,20 @@ def process_portfolio_dataframe(df):
 
 @st.cache_data(ttl=3600)
 def get_live_eu_ets_price():
+    if OFFLINE_MODE:
+        return 70.00
     try: return round(float(yf.Ticker("KEZ=F").history(period="1d")['Close'].iloc[-1]), 2)
     except: return 70.00
+
+
+def parse_coordinate_input(raw_value):
+    text = str(raw_value or "").strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 @st.cache_data
 def load_taxonomy_json(file_content_or_path="taxonomy.json"):
@@ -980,6 +1018,9 @@ def check_cbam_category(cn_code):
 with st.sidebar:
     st.markdown("## Test di Assoggettabilità")
 
+    if OFFLINE_MODE:
+        st.info("Modalità offline completa: tutte le tab restano disponibili. Le parti che richiedono internet usano cache locale o input manuali.")
+
     st.session_state.company_name = st.text_input("Nome Azienda", value=st.session_state.get('company_name', ''))
     st.session_state.ragione_sociale = st.text_input("Ragione sociale", value=st.session_state.get('ragione_sociale', ''))
     st.session_state.codice_nace_ateco = st.text_input("Codice NACE/ATECO", value=st.session_state.get('codice_nace_ateco', ''))
@@ -990,6 +1031,31 @@ with st.sidebar:
     
     impresa_area = st.radio("Sede Legale", ["UE", "Extra-UE"], key='impresa_area', horizontal=True)
     st.text_input("Indirizzo sede", key="hq_address", placeholder="Es. Via Roma 1, Milano, Italia")
+    if OFFLINE_MODE:
+        c_hq_lat, c_hq_lon = st.columns(2)
+        with c_hq_lat:
+            hq_lat_text = st.text_input(
+                "Latitudine sede",
+                value="" if st.session_state.get('hq_lat') is None else f"{float(st.session_state.get('hq_lat')):.6f}",
+                key="hq_lat_text",
+                placeholder="45.464203"
+            )
+        with c_hq_lon:
+            hq_lon_text = st.text_input(
+                "Longitudine sede",
+                value="" if st.session_state.get('hq_lon') is None else f"{float(st.session_state.get('hq_lon')):.6f}",
+                key="hq_lon_text",
+                placeholder="9.189982"
+            )
+
+        parsed_hq_lat = parse_coordinate_input(hq_lat_text)
+        parsed_hq_lon = parse_coordinate_input(hq_lon_text)
+        if hq_lat_text.strip() and parsed_hq_lat is None:
+            st.warning("Latitudine sede non valida.")
+        if hq_lon_text.strip() and parsed_hq_lon is None:
+            st.warning("Longitudine sede non valida.")
+        st.session_state.hq_lat = parsed_hq_lat
+        st.session_state.hq_lon = parsed_hq_lon
     
     # Campi condizionali per UE
     if st.session_state.impresa_area == "UE":
@@ -1087,9 +1153,37 @@ with st.sidebar:
         else:
             st.caption(f"Progetto corrente: {st.session_state['current_project_name']}")
 
+    st.caption("Backup progetto per uso online o multi-dispositivo")
+    export_file_name, export_file_bytes = export_project_snapshot(effective_project_name)
+    st.download_button(
+        "Scarica progetto JSON",
+        data=export_file_bytes,
+        file_name=export_file_name,
+        mime="application/json",
+        use_container_width=True,
+    )
+    uploaded_project_file = st.file_uploader(
+        "Importa progetto JSON",
+        type=['json'],
+        key="uploaded_project_json",
+    )
+    if st.button("Importa progetto", use_container_width=True, disabled=uploaded_project_file is None):
+        try:
+            imported_payload = import_project(uploaded_project_file)
+        except Exception as exc:
+            st.error(f"Importazione non riuscita: {exc}")
+        else:
+            st.success(f"Progetto importato: {imported_payload['project_name']}")
+            st.rerun()
+
+    if os.getenv("CODESPACES") or os.getenv("STREAMLIT_RUNTIME"):
+        st.caption("Per mantenere lo stesso progetto anche online, scarica il JSON e reimportalo quando riapri l'app.")
+
 
 # --- CORPO PRINCIPALE E TABS ---
-st.title("🌍 Supporto alla Rendicontazione PMI")
+st.title(APP_DISPLAY_TITLE)
+if OFFLINE_MODE:
+    st.caption("Versione locale offline completa: report, checklist, mappa da coordinate o upload, export PDF e salvataggio progetto sono disponibili senza internet.")
 
 
 def clean_question_label(question):
@@ -1108,6 +1202,8 @@ def to_italian_question_label(question_label):
         "environmental certifications": "Certificazioni ambientali",
         "energy consumption": "Consumo energetico",
         "ghg emissions - scope 1 & 2": "Emissioni GHG - Scope 1 e 2",
+        "biodiversity metrics": "Metriche di biodiversità",
+        "environmental monitoring data_water": "Uso di acqua",
     }
     return translation_map.get(normalized, label)
 
@@ -1146,6 +1242,98 @@ def is_b3_ghg_scope12_question(question):
 
 def is_b3_checklist_question(question):
     return is_b3_energy_consumption_question(question) or is_b3_ghg_scope12_question(question)
+
+
+def is_b4_environmental_monitoring_question(question):
+    normalized_question = clean_question_label(question).lower()
+    return (
+        "environmental monitoring data" in normalized_question
+        or "dati di monitoraggio ambientale" in normalized_question
+    )
+
+
+def is_b5_biodiversity_metrics_question(question):
+    normalized_question = clean_question_label(question).lower()
+    return (
+        "biodiversity metrics" in normalized_question
+        or "metriche di biodivers" in normalized_question
+    )
+
+
+def is_b6_water_question(question):
+    normalized_question = clean_question_label(question).lower()
+    return (
+        "environmental monitoring data_water" in normalized_question
+        or "uso di acqua" in normalized_question
+        or "water" in normalized_question and "monitoring" in normalized_question
+    )
+
+
+def b6_water_auto_answer(prev_year, curr_year):
+    tables = st.session_state.get('vsme_disclosure_tables', {})
+    df = tables.get('vsme_table_B6_uso_acqua')
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+
+    B6_PRELIEVO_ROWS = [
+        "Prelievo da acquedotto",
+        "Prelievo da pozzo",
+        "Prelievo acque superficiali (es. laghi, fiumi)",
+        "Prelievo di acqua da altre fonti (specificare)",
+    ]
+    B6_SCARICO_ROWS = [
+        "Quantità di acqua scaricata",
+    ]
+    work_df = df.where(pd.notna(df), "")
+    label_col = "Voce"
+    if label_col not in work_df.columns:
+        return None
+
+    def has_any_value(row_labels, cols):
+        for lbl in row_labels:
+            row = work_df[work_df[label_col] == lbl]
+            if row.empty:
+                continue
+            for col in cols:
+                if col in row.columns and str(row.iloc[0][col]).strip():
+                    return True
+        return False
+
+    year_cols = [c for c in [prev_year, curr_year] if c in work_df.columns]
+    if not year_cols:
+        return None
+
+    part1_filled = has_any_value(B6_PRELIEVO_ROWS, year_cols)
+    part2_filled = has_any_value(B6_SCARICO_ROWS, year_cols)
+
+    if part1_filled and part2_filled:
+        return 'Sì'
+    if part1_filled or part2_filled:
+        return 'Sì, ma necessita integrazione'
+    return None
+
+
+def _parse_decimal_for_calc(raw_value):
+    raw = str(raw_value or "").strip().replace(" ", "")
+    if not raw:
+        return None
+    try:
+        if "," in raw and "." in raw:
+            raw = raw.replace(".", "").replace(",", ".")
+        elif "," in raw:
+            raw = raw.replace(",", ".")
+        return float(raw)
+    except Exception:
+        return None
+
+
+def _compute_variation_percent(prev_val, curr_val):
+    prev_num = _parse_decimal_for_calc(prev_val)
+    curr_num = _parse_decimal_for_calc(curr_val)
+    if prev_num is None or curr_num is None or prev_num == 0:
+        return ""
+    pct = (curr_num - prev_num) / abs(prev_num) * 100
+    return f"{pct:+.2f}%"
 
 
 def _latest_site_year_column(df, site_idx=1):
@@ -1204,7 +1392,7 @@ def b3_energy_consumption_auto_answer():
     if table_state == 'full':
         return 'Sì'
     if table_state == 'partial':
-        return 'Sì, ma con integrazione necessaria'
+        return 'Sì, ma necessita integrazione'
     return None
 
 
@@ -1227,7 +1415,68 @@ def b3_ghg_scope12_auto_answer():
     if table_state == 'full':
         return 'Sì'
     if table_state == 'partial':
-        return 'Sì, ma con integrazione necessaria'
+        return 'Sì, ma necessita integrazione'
+    return None
+
+
+def b4_environmental_monitoring_auto_answer(prev_year, curr_year):
+    tables = st.session_state.get('vsme_disclosure_tables', {})
+    b4_df = tables.get('vsme_table_B4_inquinamento')
+    if b4_df is None or not isinstance(b4_df, pd.DataFrame) or b4_df.empty:
+        return None
+
+    emission_cols = [f"Emissioni [kg] - {prev_year}", f"Emissioni [kg] - {curr_year}"]
+    existing_cols = [col for col in emission_cols if col in b4_df.columns]
+    if not existing_cols:
+        return None
+
+    normalized_df = b4_df.where(pd.notna(b4_df), "")
+    has_any_emission_value = False
+    for col in existing_cols:
+        if normalized_df[col].apply(lambda value: str(value).strip() != "").any():
+            has_any_emission_value = True
+            break
+
+    return "Sì" if has_any_emission_value else None
+
+
+def b5_biodiversity_metrics_auto_answer(curr_year):
+    tables = st.session_state.get('vsme_disclosure_tables', {})
+
+    first_table_state = 'missing'
+    site_df = tables.get('vsme_table_B5_sedi_biodiversita')
+    if site_df is not None and isinstance(site_df, pd.DataFrame) and not site_df.empty and "Metrica" in site_df.columns:
+        normalized_site_df = site_df.where(pd.notna(site_df), "")
+        site_cols = [col for col in normalized_site_df.columns if col != "Metrica"]
+        area_row = normalized_site_df[normalized_site_df["Metrica"] == "Area (ha)"]
+        protected_row = normalized_site_df[normalized_site_df["Metrica"] == "Area protetta (biodiversity sensitive area)"]
+
+        has_area = False
+        has_protected = False
+        if site_cols and not area_row.empty:
+            has_area = any(str(area_row.iloc[0].get(col, "")).strip() for col in site_cols)
+        if site_cols and not protected_row.empty:
+            has_protected = any(str(protected_row.iloc[0].get(col, "")).strip() for col in site_cols)
+
+        if has_area and has_protected:
+            first_table_state = 'full'
+        elif has_area or has_protected:
+            first_table_state = 'partial'
+
+    second_table_state = 'missing'
+    metrics_df = tables.get('vsme_table_B5_metriche_biodiversita')
+    if metrics_df is not None and isinstance(metrics_df, pd.DataFrame) and not metrics_df.empty and curr_year in metrics_df.columns:
+        normalized_metrics_df = metrics_df.where(pd.notna(metrics_df), "")
+        filled_count = normalized_metrics_df[curr_year].apply(lambda value: str(value).strip() != "").sum()
+        if filled_count == 4:
+            second_table_state = 'full'
+        elif filled_count > 0:
+            second_table_state = 'partial'
+
+    if first_table_state == 'full' and second_table_state == 'full':
+        return 'Sì'
+    if first_table_state in {'full', 'partial'} or second_table_state in {'full', 'partial'}:
+        return 'Sì, ma necessita integrazione'
     return None
 
 
@@ -1252,6 +1501,12 @@ def get_question_datapoints(question):
         return 1
     if is_b3_ghg_scope12_question(question):
         return 3
+    if is_b4_environmental_monitoring_question(question):
+        return 1
+    if is_b5_biodiversity_metrics_question(question):
+        return 5
+    if is_b6_water_question(question):
+        return 2
     match = re.search(r'\((\d+) datapoints\)', str(question or ''))
     return int(match.group(1)) if match else 0
 
@@ -1260,7 +1515,7 @@ def answer_to_status(answer):
     normalized_answer = normalize_vsme_response_label(answer).lower()
     if normalized_answer in {'sì', 'si'}:
         return 'ready', 0
-    if normalized_answer == 'sì, ma con integrazione necessaria':
+    if normalized_answer == 'sì, ma necessita integrazione':
         return 'partial', 1
     if normalized_answer in {'no, ma pianificato', 'no'}:
         return 'missing', 2
@@ -1302,7 +1557,7 @@ def interview_management_auto_answer(selected_mode):
     if table_state == 'full':
         return 'Sì'
     if table_state == 'partial':
-        return 'Sì, ma con integrazione necessaria'
+        return 'Sì, ma necessita integrazione'
     return None
 
 
@@ -1339,7 +1594,7 @@ def balance_economics_auto_answer():
     if filled == 4:
         return 'Sì'
     if filled > 0:
-        return 'Sì, ma con integrazione necessaria'
+        return 'Sì, ma necessita integrazione'
     return None
 
 
@@ -1363,7 +1618,7 @@ def hr_reporting_auto_answer():
     if val_prev and val_curr:
         return 'Sì'
     if val_prev or val_curr:
-        return 'Sì, ma con integrazione necessaria'
+        return 'Sì, ma necessita integrazione'
     return None
 
 
@@ -1396,7 +1651,7 @@ def governance_overview_auto_answer():
     if filled == 2:
         return 'Sì'
     if filled > 0 or has_geo_partial:
-        return 'Sì, ma con integrazione necessaria'
+        return 'Sì, ma necessita integrazione'
     return None
 
 
@@ -1430,7 +1685,7 @@ def environmental_certifications_auto_answer():
     if has_full:
         return 'Sì'
     if has_partial:
-        return 'Sì, ma con integrazione necessaria'
+        return 'Sì, ma necessita integrazione'
     return None
 
 
@@ -1535,7 +1790,7 @@ def transition_plan_auto_answer():
     if dp1 and dp2:
         return 'Sì'
     if dp1 or dp2:
-        return 'Sì, ma con integrazione necessaria'
+        return 'Sì, ma necessita integrazione'
     return None
 
 
@@ -1735,10 +1990,14 @@ with t_triage:
                     is_transition_row = is_transition_plan_question(q)
                     is_b3_energy_row = is_b3_energy_consumption_question(q)
                     is_b3_ghg_row = is_b3_ghg_scope12_question(q)
+                    is_b4_monitoring_row = is_b4_environmental_monitoring_question(q)
+                    is_b5_biodiversity_row = is_b5_biodiversity_metrics_question(q)
+                    is_b6_water_row = is_b6_water_question(q)
                     is_auto_row = (is_interview_row or is_balance_row or is_hr_row
                                    or is_governance_row or is_env_cert_row
                                    or is_hse_ap_row or is_hse_pol_row or is_transition_row
-                                   or is_b3_energy_row or is_b3_ghg_row)
+                                   or is_b3_energy_row or is_b3_ghg_row or is_b4_monitoring_row
+                                   or is_b5_biodiversity_row or is_b6_water_row)
 
                     if is_auto_row:
                         auto_datapoints = get_question_datapoints(q)
@@ -1762,6 +2021,20 @@ with t_triage:
                             auto_answer = b3_energy_consumption_auto_answer()
                         elif is_b3_ghg_row:
                             auto_answer = b3_ghg_scope12_auto_answer()
+                        elif is_b4_monitoring_row:
+                            compilation_year = datetime.now().year
+                            prev_year = str(compilation_year - 2)
+                            curr_year = str(compilation_year - 1)
+                            auto_answer = b4_environmental_monitoring_auto_answer(prev_year, curr_year)
+                        elif is_b5_biodiversity_row:
+                            compilation_year = datetime.now().year
+                            curr_year = str(compilation_year - 1)
+                            auto_answer = b5_biodiversity_metrics_auto_answer(curr_year)
+                        elif is_b6_water_row:
+                            compilation_year = datetime.now().year
+                            prev_year = str(compilation_year - 2)
+                            curr_year = str(compilation_year - 1)
+                            auto_answer = b6_water_auto_answer(prev_year, curr_year)
                         else:
                             auto_answer = transition_plan_auto_answer()
 
@@ -1774,7 +2047,10 @@ with t_triage:
                                 disabled=True,
                             )
                         else:
-                            manual_options = ["No, ma pianificato", "No"]
+                            if is_b4_monitoring_row or is_b6_water_row:
+                                manual_options = ["Sì, ma necessita integrazione", "No, ma pianificato", "No"]
+                            else:
+                                manual_options = ["No, ma pianificato", "No"]
                             if st.session_state.get(answer_key) not in manual_options:
                                 st.session_state[answer_key] = manual_options[0]
                             val = st.selectbox(
@@ -1877,7 +2153,7 @@ with t_triage:
         df_distribution = pd.DataFrame(distribution_rows)
         color_map = {
             "Sì": "#2ecc71",
-            "Sì, ma con integrazione necessaria": "#f39c12",
+            "Sì, ma necessita integrazione": "#f39c12",
             "No, ma pianificato": "#3498db",
             "No": "#e74c3c",
         }
@@ -2057,6 +2333,8 @@ with t_triage:
                     b2_is_custom = disclosure['code'] == "B2"
                     b3_is_custom = disclosure['code'] == "B3"
                     b4_is_custom = disclosure['code'] == "B4"
+                    b5_is_custom = disclosure['code'] == "B5"
+                    b6_is_custom = disclosure['code'] == "B6"
                     if b1_is_custom:
                         st.radio(
                             'Informazioni omesse in quanto ritenute riservate o sensibili?',
@@ -2115,9 +2393,43 @@ with t_triage:
                                 unsafe_allow_html=True,
                             )
 
+                            consolidato_col_config = {
+                                'Tipo sede (es. sede legale, magazzino, stabilimento industriale, ecc.)': st.column_config.TextColumn(
+                                    'Tipo sede (es. sede legale, magazzino, stabilimento industriale, ecc.)',
+                                    width='medium',
+                                    help='Tipologia della sede (es. sede legale, stabilimento, magazzino, ecc.)'
+                                ),
+                                'N. siti': st.column_config.TextColumn(
+                                    'N. siti',
+                                    width='small',
+                                    help='Numero di siti di questa tipologia'
+                                ),
+                                'Indirizzo': st.column_config.TextColumn(
+                                    'Indirizzo',
+                                    width='medium',
+                                    help='Indirizzo fisico della sede'
+                                ),
+                                'Codice Postale': st.column_config.TextColumn(
+                                    'Codice Postale',
+                                    width='small',
+                                    help='Codice postale della sede'
+                                ),
+                                'Città': st.column_config.TextColumn(
+                                    'Città',
+                                    width='small',
+                                    help='Città dove è localizzata la sede'
+                                ),
+                                'Paese': st.column_config.TextColumn(
+                                    'Paese',
+                                    width='small',
+                                    help='Paese di localizzazione della sede'
+                                ),
+                            }
+
                             edited_df = st.data_editor(
                                 st.session_state.vsme_disclosure_tables[editor_storage_key],
                                 key=f"editor_{editor_storage_key}",
+                                column_config=consolidato_col_config,
                                 width='stretch',
                                 hide_index=True,
                                 num_rows="fixed",
@@ -2164,9 +2476,27 @@ with t_triage:
                             st.session_state.vsme_disclosure_tables[dimensioni_storage_key] = dim_df
 
                         st.markdown("##### Dimensioni")
+                        dim_col_config = {
+                            "Dimensione": st.column_config.TextColumn(
+                                "Dimensione",
+                                width='medium',
+                                help="Indicatore di dimensione aziendale"
+                            ),
+                            dim_prev_year_col: st.column_config.TextColumn(
+                                dim_prev_year_col,
+                                width='small',
+                                help=f"Valore relativo all'anno {compilation_year - 2}"
+                            ),
+                            dim_curr_year_col: st.column_config.TextColumn(
+                                dim_curr_year_col,
+                                width='small',
+                                help=f"Valore relativo all'anno {compilation_year - 1}"
+                            ),
+                        }
                         dim_edited_df = st.data_editor(
                             st.session_state.vsme_disclosure_tables[dimensioni_storage_key],
                             key=f"editor_{dimensioni_storage_key}",
+                            column_config=dim_col_config,
                             width='stretch',
                             hide_index=True,
                             num_rows="fixed",
@@ -2242,9 +2572,22 @@ with t_triage:
                                     st.session_state.vsme_disclosure_tables[geoloc_storage_key] = current_geo
 
                         st.markdown("##### Geolocalizzazione siti")
+                        geo_col_config = {
+                            "Sito (di proprietà, in locazione o gestito)": st.column_config.TextColumn(
+                                "Sito (di proprietà, in locazione o gestito)",
+                                width='medium',
+                                help="Nome o descrizione del sito"
+                            ),
+                            "Coordinate GPS": st.column_config.TextColumn(
+                                "Coordinate GPS",
+                                width='medium',
+                                help="Coordinate GPS nel formato: latitudine, longitudine (es. 45.4642, 9.1900)"
+                            ),
+                        }
                         geo_edited_df = st.data_editor(
                             st.session_state.vsme_disclosure_tables[geoloc_storage_key],
                             key=f"editor_{geoloc_storage_key}",
+                            column_config=geo_col_config,
                             width='stretch',
                             hide_index=True,
                             num_rows="fixed",
@@ -2276,9 +2619,32 @@ with t_triage:
                             st.session_state.vsme_disclosure_tables[cert_storage_key] = cert_df
 
                         st.markdown("##### Certificazioni o marchi relativi alla sostenibilità")
+                        cert_col_config = {
+                            "Breve descrizione": st.column_config.TextColumn(
+                                "Breve descrizione",
+                                width='medium',
+                                help="Descrizione della certificazione o marchio"
+                            ),
+                            "Organismo di certificazione": st.column_config.TextColumn(
+                                "Organismo di certificazione",
+                                width='medium',
+                                help="Nome dell'ente certificatore"
+                            ),
+                            "Data": st.column_config.TextColumn(
+                                "Data",
+                                width='small',
+                                help="Data di ottenimento della certificazione (es. 2024-01-15)"
+                            ),
+                            "Punteggio": st.column_config.TextColumn(
+                                "Punteggio",
+                                width='small',
+                                help="Punteggio o rating della certificazione (se applicabile)"
+                            ),
+                        }
                         cert_edited_df = st.data_editor(
                             st.session_state.vsme_disclosure_tables[cert_storage_key],
                             key=f"editor_{cert_storage_key}",
+                            column_config=cert_col_config,
                             width='stretch',
                             hide_index=True,
                             num_rows="fixed",
@@ -2367,11 +2733,18 @@ with t_triage:
                             B2_COLONNE[3]: "Le politiche hanno\ndegli obiettivi?",
                             B2_COLONNE[4]: "Esistono iniziative future che affrontano\ndei temi di sostenibilità?",
                         }
+                        b2_help_map = {
+                            B2_COLONNE[0]: "Indicare la presenza di pratiche concrete",
+                            B2_COLONNE[1]: "Indicare la presenza di politiche documentate",
+                            B2_COLONNE[2]: "Indicare se le politiche sono pubblicamente accessibili",
+                            B2_COLONNE[3]: "Indicare la presenza di obiettivi quantificati",
+                            B2_COLONNE[4]: "Indicare la presenza di piani futuri pianificati",
+                        }
                         for col in B2_COLONNE:
                             column_config_b2[col] = st.column_config.CheckboxColumn(
                                 b2_header_map.get(col, col),
                                 width="small",
-                                help=col,
+                                help=b2_help_map.get(col, col),
                             )
 
                         b2_edited = st.data_editor(
@@ -2527,9 +2900,9 @@ with t_triage:
                             var_col = _sede_var_col(site_idx)
                             b3_df[var_col] = b3_df.apply(lambda row, p=prev_col, c=curr_col: _compute_variazione_b3(row, p, c), axis=1)
                             ordered_display_cols.extend([prev_col, curr_col, var_col])
-                            column_config_b3[prev_col] = st.column_config.TextColumn(prev_col, width="small", help=prev_col)
-                            column_config_b3[curr_col] = st.column_config.TextColumn(curr_col, width="small", help=curr_col)
-                            column_config_b3[var_col] = st.column_config.TextColumn(var_col, disabled=True, width="small", help=var_col)
+                            column_config_b3[prev_col] = st.column_config.TextColumn(prev_col, width="small", help=f"Valore relativo all'anno {compilation_year - 2}")
+                            column_config_b3[curr_col] = st.column_config.TextColumn(curr_col, width="small", help=f"Valore relativo all'anno {compilation_year - 1}")
+                            column_config_b3[var_col] = st.column_config.TextColumn(var_col, disabled=True, width="small", help="Variazione % calcolata automaticamente")
 
                         df_b3_display = b3_df[ordered_display_cols].copy()
 
@@ -2733,9 +3106,9 @@ with t_triage:
                             ghg_df_display[vc] = ghg_df_display.apply(_var_ghg_row, axis=1)
 
                             ghg_ordered_cols.extend([pc, cc, vc])
-                            ghg_column_config[pc] = st.column_config.TextColumn(pc, width="small", help=pc)
-                            ghg_column_config[cc] = st.column_config.TextColumn(cc, width="small", help=cc)
-                            ghg_column_config[vc] = st.column_config.TextColumn(vc, disabled=True, width="small", help=vc)
+                            ghg_column_config[pc] = st.column_config.TextColumn(pc, width="small", help=f"Valore relativo all'anno {compilation_year - 2}")
+                            ghg_column_config[cc] = st.column_config.TextColumn(cc, width="small", help=f"Valore relativo all'anno {compilation_year - 1}")
+                            ghg_column_config[vc] = st.column_config.TextColumn(vc, disabled=True, width="small", help="Variazione % calcolata automaticamente")
 
                         # Rendi Intensità GHG e Variazione % non editabili nel display.
                         # Le colonn editable sono tutte eccetto Intensità GHG (pc/cc) e var.
@@ -2874,20 +3247,27 @@ with t_triage:
                         )
 
                         b4_column_config = {
-                            "Inquinante": st.column_config.TextColumn("Inquinante", width="medium"),
+                            "Inquinante": st.column_config.TextColumn(
+                                "Inquinante",
+                                width="medium",
+                                help="Nome del contaminante rilasciato nell'ambiente"
+                            ),
                             "Rilasciato in": st.column_config.SelectboxColumn(
                                 "Rilasciato in",
                                 options=b4_release_options,
                                 required=True,
                                 width="small",
+                                help="Mezzo di rilascio (Aria, Acqua, Suolo)"
                             ),
                             f"Emissioni [kg] - {prev_year}": st.column_config.TextColumn(
                                 f"Emissioni [kg] - {prev_year}",
                                 width="small",
+                                help=f"Quantità rilasciata in kg (anno {prev_year})"
                             ),
                             f"Emissioni [kg] - {curr_year}": st.column_config.TextColumn(
                                 f"Emissioni [kg] - {curr_year}",
                                 width="small",
+                                help=f"Quantità rilasciata in kg (anno {curr_year})"
                             ),
                         }
 
@@ -2915,7 +3295,481 @@ with t_triage:
                             st.session_state.vsme_disclosure_tables[b4_key] = current_b4
                             st.rerun()
 
-                    if not b1_is_custom and not b2_is_custom and not b3_is_custom and not b4_is_custom:
+                        if pillar_code == "E" and questions_for_pillar is not None and gap_scale_options is not None:
+                            st.markdown("---")
+                            st.markdown("##### Documenti e informazioni - Disclosure B4")
+                            render_gap_list(
+                                questions_for_pillar,
+                                pillar_code,
+                                st.container(),
+                                gap_scale_options,
+                                gap_prefix,
+                                question_filter=is_b4_environmental_monitoring_question,
+                                manage_cleanup=False,
+                            )
+                            render_disclosure_readiness(
+                                questions_for_pillar,
+                                pillar_code,
+                                gap_prefix,
+                                "Disclosure B4",
+                                question_filter=is_b4_environmental_monitoring_question,
+                            )
+
+                    elif b5_is_custom:
+                        compilation_year = datetime.now().year
+                        prev_year = str(compilation_year - 2)
+                        curr_year = str(compilation_year - 1)
+
+                        # Prima tabella: righe per sede, colonne per metrica
+                        b5_sites_key = "vsme_table_B5_sedi_biodiversita"
+                        b5_metrics = [
+                            "Coordinate (geolocalizzazione)",
+                            "Area (ha)",
+                            "Area protetta (biodiversity sensitive area)",
+                            "Note",
+                        ]
+
+                        geo_df = st.session_state.vsme_disclosure_tables.get("vsme_table_B1_geolocalizzazione_siti")
+                        site_pairs = []
+                        if geo_df is not None and isinstance(geo_df, pd.DataFrame) and not geo_df.empty:
+                            normalized_geo_df = geo_df.where(pd.notna(geo_df), "")
+                            used_names = set()
+                            fallback_idx = 1
+                            for _, row in normalized_geo_df.iterrows():
+                                site_name = str(row.get("Sito (di proprietà, in locazione o gestito)", "")).strip()
+                                coordinates = str(row.get("Coordinate GPS", "")).strip()
+                                if not site_name and not coordinates:
+                                    continue
+                                if not site_name:
+                                    site_name = f"Sede {fallback_idx}"
+                                base_name = site_name
+                                suffix = 2
+                                while site_name in used_names:
+                                    site_name = f"{base_name} ({suffix})"
+                                    suffix += 1
+                                used_names.add(site_name)
+                                site_pairs.append((site_name, coordinates))
+                                fallback_idx += 1
+
+                        if not site_pairs:
+                            site_pairs = [("Sede 1", "")]
+
+                        site_names = [name for name, _ in site_pairs]
+                        coordinates_by_site = {name: coordinates for name, coordinates in site_pairs}
+
+                        existing_b5_sites_df = st.session_state.vsme_disclosure_tables.get(b5_sites_key)
+                        if existing_b5_sites_df is None or not isinstance(existing_b5_sites_df, pd.DataFrame) or existing_b5_sites_df.empty:
+                            synced_b5_sites_df = pd.DataFrame({"Sedi": site_names})
+                            for metric in b5_metrics:
+                                synced_b5_sites_df[metric] = ""
+                        else:
+                            synced_b5_sites_df = existing_b5_sites_df.copy()
+                            if "Sedi" not in synced_b5_sites_df.columns:
+                                first_col = synced_b5_sites_df.columns[0]
+                                synced_b5_sites_df = synced_b5_sites_df.rename(columns={first_col: "Sedi"})
+                            for metric in b5_metrics:
+                                if metric not in synced_b5_sites_df.columns:
+                                    synced_b5_sites_df[metric] = ""
+                            synced_b5_sites_df = synced_b5_sites_df[["Sedi"] + b5_metrics]
+
+                        # Assicura che tutte le sedi da B1 siano presenti come righe
+                        existing_sites = set(synced_b5_sites_df["Sedi"].tolist())
+                        for site_name in site_names:
+                            if site_name not in existing_sites:
+                                new_row = pd.DataFrame({"Sedi": [site_name], **{metric: [""] for metric in b5_metrics}})
+                                synced_b5_sites_df = pd.concat([synced_b5_sites_df, new_row], ignore_index=True)
+                        
+                        synced_b5_sites_df = synced_b5_sites_df.fillna("").astype(str).replace({"None": "", "nan": "", "NaN": ""})
+
+                        # Sincronizza coordinate da B1
+                        for idx, site_name in enumerate(synced_b5_sites_df["Sedi"]):
+                            coord = coordinates_by_site.get(str(site_name).strip(), "")
+                            synced_b5_sites_df.loc[idx, "Coordinate (geolocalizzazione)"] = coord
+
+                        st.markdown("##### Siti in aree sensibili alla biodiversità")
+                        
+                        b5_column_config = {
+                            "Sedi": st.column_config.TextColumn(
+                                "Sedi",
+                                disabled=True,
+                                width="medium",
+                                help="Nome della sede"
+                            ),
+                            "Coordinate (geolocalizzazione)": st.column_config.TextColumn(
+                                "Coordinate (geolocalizzazione)",
+                                width="medium",
+                                help="Coordinate GPS della sede (sincronizzate da Geolocalizzazione B1)"
+                            ),
+                            "Area (ha)": st.column_config.TextColumn(
+                                "Area (ha)",
+                                width="small",
+                                help="Area in ettari"
+                            ),
+                            "Area protetta (biodiversity sensitive area)": st.column_config.SelectboxColumn(
+                                "Area protetta (biodiversity sensitive area)",
+                                options=["", "Sì", "No"],
+                                required=False,
+                                width="medium",
+                                help="Indicare se l'area è protetta"
+                            ),
+                            "Note": st.column_config.TextColumn(
+                                "Note",
+                                width="medium",
+                                help="Note aggiuntive"
+                            ),
+                        }
+
+                        edited_b5_sites = st.data_editor(
+                            synced_b5_sites_df,
+                            key=f"editor_{b5_sites_key}",
+                            column_config=b5_column_config,
+                            hide_index=True,
+                            num_rows="fixed",
+                            width='stretch',
+                            disabled=["Sedi"] + (["Coordinate (geolocalizzazione)"] if len(synced_b5_sites_df) > 0 and all(synced_b5_sites_df["Sedi"].iloc[i] in site_names for i in range(min(len(site_names), len(synced_b5_sites_df)))) else []),
+                        )
+                        
+                        # Bonifica e valida i valori "Area protetta" - togli "None"
+                        if "Area protetta (biodiversity sensitive area)" in edited_b5_sites.columns:
+                            for idx in range(len(edited_b5_sites)):
+                                raw_val = str(edited_b5_sites.loc[idx, "Area protetta (biodiversity sensitive area)"]).strip().lower()
+                                if raw_val == "none":
+                                    edited_b5_sites.loc[idx, "Area protetta (biodiversity sensitive area)"] = ""
+                                elif raw_val in {"si", "sì", "yes", "y", "1", "true"}:
+                                    edited_b5_sites.loc[idx, "Area protetta (biodiversity sensitive area)"] = "Sì"
+                                elif raw_val in {"no", "n", "0", "false"}:
+                                    edited_b5_sites.loc[idx, "Area protetta (biodiversity sensitive area)"] = "No"
+                                elif raw_val not in {"", "sì", "si", "no"}:
+                                    edited_b5_sites.loc[idx, "Area protetta (biodiversity sensitive area)"] = ""
+                        
+                        edited_b5_sites = edited_b5_sites.fillna("").astype(str).replace({"None": "", "nan": "", "NaN": ""})
+                        st.session_state.vsme_disclosure_tables[b5_sites_key] = edited_b5_sites
+
+                        if st.button("+ Aggiungi sede", key="b5_add_site_btn"):
+                            new_site_name = f"Sede {len(edited_b5_sites) + 1}"
+                            new_row = pd.DataFrame({"Sedi": [new_site_name], **{metric: [""] for metric in b5_metrics}})
+                            updated_df = pd.concat([edited_b5_sites, new_row], ignore_index=True)
+                            st.session_state.vsme_disclosure_tables[b5_sites_key] = updated_df
+                            st.rerun()
+
+                        # Seconda tabella: 4 metriche con colonne N-2, N-1 e variazione % auto-calcolata.
+                        st.markdown("---")
+                        b5_metrics_key = "vsme_table_B5_metriche_biodiversita"
+                        b5_rows = [
+                            "Uso del suolo totale [ha]",
+                            "Totale superficie impermeabilizzata",
+                            "Totale superficie nature-oriented on-site",
+                            "Totale superficie nature-oriented off-site",
+                        ]
+                        first_site_name = site_names[0] if site_names else "Sede 1"
+                        b5_label_col = first_site_name
+
+                        existing_b5_metrics_df = st.session_state.vsme_disclosure_tables.get(b5_metrics_key)
+                        if existing_b5_metrics_df is None or not isinstance(existing_b5_metrics_df, pd.DataFrame) or existing_b5_metrics_df.empty:
+                            b5_metrics_df = pd.DataFrame({
+                                b5_label_col: b5_rows,
+                                prev_year: "",
+                                curr_year: "",
+                            })
+                        else:
+                            b5_metrics_df = existing_b5_metrics_df.copy().fillna("").astype(str).replace({"None": "", "nan": "", "NaN": ""})
+                            candidate_label_cols = [
+                                col for col in b5_metrics_df.columns
+                                if col not in {prev_year, curr_year, "Variazione %", first_site_name}
+                            ]
+                            if b5_label_col not in b5_metrics_df.columns:
+                                if candidate_label_cols:
+                                    b5_metrics_df = b5_metrics_df.rename(columns={candidate_label_cols[0]: b5_label_col})
+                                else:
+                                    b5_metrics_df[b5_label_col] = b5_rows
+                            if prev_year not in b5_metrics_df.columns:
+                                b5_metrics_df[prev_year] = ""
+                            if curr_year not in b5_metrics_df.columns:
+                                b5_metrics_df[curr_year] = ""
+                            b5_metrics_df = b5_metrics_df[[b5_label_col, prev_year, curr_year]]
+                            if b5_metrics_df.empty:
+                                b5_metrics_df = pd.DataFrame({
+                                    b5_label_col: b5_rows,
+                                    prev_year: "",
+                                    curr_year: "",
+                                })
+
+                        # Struttura righe fissa in ordine coerente con il template.
+                        b5_metrics_df = b5_metrics_df.fillna("").astype(str).replace({"None": "", "nan": "", "NaN": ""})
+                        b5_metrics_df = b5_metrics_df.set_index(b5_label_col, drop=False)
+                        for row_label in b5_rows:
+                            if row_label not in b5_metrics_df.index:
+                                b5_metrics_df.loc[row_label, b5_label_col] = row_label
+                                b5_metrics_df.loc[row_label, prev_year] = ""
+                                b5_metrics_df.loc[row_label, curr_year] = ""
+                        b5_metrics_df = b5_metrics_df.loc[b5_rows].reset_index(drop=True)
+                        b5_metrics_df = b5_metrics_df.fillna("").astype(str).replace({"None": "", "nan": "", "NaN": ""})
+
+                        b5_display_df = b5_metrics_df.copy()
+                        b5_display_df["Variazione %"] = b5_display_df.apply(
+                            lambda row: _compute_variation_percent(row.get(prev_year, ""), row.get(curr_year, "")),
+                            axis=1,
+                        )
+                        b5_display_df = b5_display_df.fillna("").astype(str).replace({"None": "", "nan": "", "NaN": ""})
+
+                        b5_column_config = {
+                            b5_label_col: st.column_config.TextColumn(
+                                b5_label_col,
+                                disabled=True,
+                                width="large",
+                                help="Metrica di uso del suolo"
+                            ),
+                            prev_year: st.column_config.TextColumn(
+                                prev_year,
+                                width="medium",
+                                help=f"Valore anno {prev_year}"
+                            ),
+                            curr_year: st.column_config.TextColumn(
+                                curr_year,
+                                width="medium",
+                                help=f"Valore anno {curr_year}"
+                            ),
+                            "Variazione %": st.column_config.TextColumn(
+                                "Variazione %",
+                                disabled=True,
+                                width="medium",
+                                help="Variazione percentuale calcolata automaticamente"
+                            ),
+                        }
+
+                        st.markdown("##### Uso del suolo")
+                        edited_b5_metrics_df = st.data_editor(
+                            b5_display_df[[b5_label_col, prev_year, curr_year, "Variazione %"]],
+                            key=f"editor_{b5_metrics_key}_{b5_label_col}_{prev_year}_{curr_year}",
+                            column_config=b5_column_config,
+                            hide_index=True,
+                            num_rows="fixed",
+                            width='stretch',
+                            disabled=[b5_label_col, "Variazione %"],
+                        )
+                        edited_b5_metrics_df = edited_b5_metrics_df.fillna("").astype(str).replace({"None": "", "nan": "", "NaN": ""})
+                        st.session_state.vsme_disclosure_tables[b5_metrics_key] = edited_b5_metrics_df[[b5_label_col, prev_year, curr_year]].copy()
+
+                        if pillar_code == "E" and questions_for_pillar is not None and gap_scale_options is not None:
+                            st.markdown("---")
+                            st.markdown("##### Documenti e informazioni - Disclosure B5")
+                            render_gap_list(
+                                questions_for_pillar,
+                                pillar_code,
+                                st.container(),
+                                gap_scale_options,
+                                gap_prefix,
+                                question_filter=is_b5_biodiversity_metrics_question,
+                                manage_cleanup=False,
+                            )
+                            render_disclosure_readiness(
+                                questions_for_pillar,
+                                pillar_code,
+                                gap_prefix,
+                                "Disclosure B5",
+                                question_filter=is_b5_biodiversity_metrics_question,
+                            )
+
+                    elif b6_is_custom:
+                        compilation_year = datetime.now().year
+                        prev_year = str(compilation_year - 2)
+                        curr_year = str(compilation_year - 1)
+
+                        b6_key = "vsme_table_B6_uso_acqua"
+                        B6_LABEL_COL = "Voce"
+                        B6_UDM_COL = "UdM"
+                        B6_STRESS_KEY = "b6_stress_idrico"
+                        B6_PRELIEVO_ROWS = [
+                            "Prelievo da acquedotto",
+                            "Prelievo da pozzo",
+                            "Prelievo acque superficiali (es. laghi, fiumi)",
+                            "Prelievo di acqua da altre fonti (specificare)",
+                        ]
+                        B6_TOTALE_ROW = "Totale prelievo idrico"
+                        B6_STRESS_ROW = "La zona di prelievo è soggetta a stress idrico?"
+                        B6_STRESS_QTA_ROW = "Se sì, specificare la quantità di acqua prelevata in siti soggetti ad alto stress idrico"
+                        B6_SCARICO_ROW = "Quantità di acqua scaricata"
+                        B6_CONSUMO_ROW = "Consumo di acqua"
+                        B6_ALL_ROWS = (
+                            B6_PRELIEVO_ROWS
+                            + [B6_TOTALE_ROW, B6_STRESS_ROW, B6_STRESS_QTA_ROW, B6_SCARICO_ROW, B6_CONSUMO_ROW]
+                        )
+                        B6_UDM_OPTIONS = [
+                            "", "m³", "L", "kL", "ML", "Gl", "ft³", "gal (US)", "gal (UK)"
+                        ]
+                        B6_READONLY_ROWS = {B6_TOTALE_ROW, B6_CONSUMO_ROW}
+                        B6_STRESS_ROW_OPTIONS = ["", "Sì", "No"]
+
+                        # Inizializza o recupera df da session_state
+                        if b6_key not in st.session_state.vsme_disclosure_tables:
+                            st.session_state.vsme_disclosure_tables[b6_key] = pd.DataFrame([
+                                {B6_LABEL_COL: row, B6_UDM_COL: "", prev_year: "", curr_year: ""}
+                                for row in B6_ALL_ROWS
+                            ])
+                        else:
+                            b6_existing = st.session_state.vsme_disclosure_tables[b6_key].copy()
+                            for col in [B6_LABEL_COL, B6_UDM_COL, prev_year, curr_year]:
+                                if col not in b6_existing.columns:
+                                    b6_existing[col] = ""
+                            existing_labels = b6_existing[B6_LABEL_COL].tolist()
+                            for row_lbl in B6_ALL_ROWS:
+                                if row_lbl not in existing_labels:
+                                    b6_existing = pd.concat([
+                                        b6_existing,
+                                        pd.DataFrame([{B6_LABEL_COL: row_lbl, B6_UDM_COL: "", prev_year: "", curr_year: ""}])
+                                    ], ignore_index=True)
+                            b6_existing = b6_existing.where(pd.notna(b6_existing), "")
+                            b6_existing = b6_existing.set_index(B6_LABEL_COL, drop=False)
+                            b6_existing = b6_existing.loc[[r for r in B6_ALL_ROWS if r in b6_existing.index]].reset_index(drop=True)
+                            st.session_state.vsme_disclosure_tables[b6_key] = b6_existing
+
+                        b6_df = st.session_state.vsme_disclosure_tables[b6_key].copy()
+                        b6_df = b6_df.where(pd.notna(b6_df), "")
+
+                        # Helper: parse numero
+                        def _b6_parse(val):
+                            try:
+                                raw = str(val or "").strip().replace(" ", "")
+                                if not raw:
+                                    return None
+                                if "," in raw and "." in raw:
+                                    raw = raw.replace(".", "").replace(",", ".")
+                                elif "," in raw:
+                                    raw = raw.replace(",", ".")
+                                return float(raw)
+                            except Exception:
+                                return None
+
+                        def _b6_sum_prelievo(df, year_col):
+                            total = 0.0
+                            any_val = False
+                            for lbl in B6_PRELIEVO_ROWS:
+                                rows = df[df[B6_LABEL_COL] == lbl]
+                                if not rows.empty:
+                                    v = _b6_parse(rows.iloc[0].get(year_col, ""))
+                                    if v is not None:
+                                        total += v
+                                        any_val = True
+                            return str(round(total, 6)) if any_val else "0"
+
+                        def _b6_calc_consumo(df, year_col):
+                            totale_val = _b6_parse(_b6_sum_prelievo(df, year_col))
+                            scarico_rows = df[df[B6_LABEL_COL] == B6_SCARICO_ROW]
+                            scarico_val = None
+                            if not scarico_rows.empty:
+                                scarico_val = _b6_parse(scarico_rows.iloc[0].get(year_col, ""))
+                            if totale_val is None:
+                                return "0"
+                            if scarico_val is None:
+                                return str(round(totale_val, 6))
+                            return str(round(totale_val - scarico_val, 6))
+
+                        # Aggiorna totale e consumo prima di mostrare
+                        for yc in [prev_year, curr_year]:
+                            totale_val = _b6_sum_prelievo(b6_df, yc)
+                            consumo_val = _b6_calc_consumo(b6_df, yc)
+                            b6_df.loc[b6_df[B6_LABEL_COL] == B6_TOTALE_ROW, yc] = totale_val
+                            b6_df.loc[b6_df[B6_LABEL_COL] == B6_CONSUMO_ROW, yc] = consumo_val
+
+                        # Gestione stress idrico: se No → riga sotto svuotata e disabilitata
+                        stress_value = st.session_state.get(B6_STRESS_KEY, "")
+                        stress_row_idx = b6_df[b6_df[B6_LABEL_COL] == B6_STRESS_ROW].index
+                        if not stress_row_idx.empty:
+                            b6_df.loc[stress_row_idx[0], prev_year] = stress_value
+                            b6_df.loc[stress_row_idx[0], curr_year] = stress_value
+
+                        # Righe non editabili: totale, consumo, stress idrico
+                        b6_disabled_rows = B6_READONLY_ROWS | {B6_STRESS_ROW}
+                        if stress_value != "Sì":
+                            b6_disabled_rows.add(B6_STRESS_QTA_ROW)
+                            b6_df.loc[b6_df[B6_LABEL_COL] == B6_STRESS_QTA_ROW, prev_year] = ""
+                            b6_df.loc[b6_df[B6_LABEL_COL] == B6_STRESS_QTA_ROW, curr_year] = ""
+
+                        st.markdown("##### Uso di acqua")
+
+                        b6_col_config = {
+                            B6_LABEL_COL: st.column_config.TextColumn(
+                                "Voce",
+                                disabled=True,
+                                width="large",
+                                help="Voce di prelievo o consumo idrico",
+                            ),
+                            B6_UDM_COL: st.column_config.SelectboxColumn(
+                                "UdM",
+                                options=B6_UDM_OPTIONS,
+                                required=False,
+                                width="small",
+                                help="Unità di misura",
+                            ),
+                            prev_year: st.column_config.TextColumn(
+                                prev_year,
+                                width="small",
+                                help=f"Valore anno {prev_year}",
+                            ),
+                            curr_year: st.column_config.TextColumn(
+                                curr_year,
+                                width="small",
+                                help=f"Valore anno {curr_year}",
+                            ),
+                        }
+
+                        edited_b6 = st.data_editor(
+                            b6_df[[B6_LABEL_COL, B6_UDM_COL, prev_year, curr_year]],
+                            key=f"editor_{b6_key}_{prev_year}_{curr_year}",
+                            column_config=b6_col_config,
+                            hide_index=True,
+                            num_rows="fixed",
+                            width='stretch',
+                            disabled=[B6_LABEL_COL] + list(b6_disabled_rows - {B6_LABEL_COL}),
+                        )
+
+                        # Dropdown stress idrico separato (non modificabile in data_editor per riga)
+                        st.markdown("**La zona di prelievo è soggetta a stress idrico?**")
+                        stress_sel = st.selectbox(
+                            "Stress idrico",
+                            options=B6_STRESS_ROW_OPTIONS,
+                            index=B6_STRESS_ROW_OPTIONS.index(stress_value) if stress_value in B6_STRESS_ROW_OPTIONS else 0,
+                            key=B6_STRESS_KEY,
+                            label_visibility="collapsed",
+                        )
+
+                        # Ricalcola totale e consumo dopo edit utente
+                        edited_b6 = edited_b6.where(pd.notna(edited_b6), "")
+                        for yc in [prev_year, curr_year]:
+                            totale_val = _b6_sum_prelievo(edited_b6, yc)
+                            consumo_val = _b6_calc_consumo(edited_b6, yc)
+                            edited_b6.loc[edited_b6[B6_LABEL_COL] == B6_TOTALE_ROW, yc] = totale_val
+                            edited_b6.loc[edited_b6[B6_LABEL_COL] == B6_CONSUMO_ROW, yc] = consumo_val
+
+                        edited_b6.loc[edited_b6[B6_LABEL_COL] == B6_STRESS_ROW, prev_year] = stress_sel
+                        edited_b6.loc[edited_b6[B6_LABEL_COL] == B6_STRESS_ROW, curr_year] = stress_sel
+                        if stress_sel != "Sì":
+                            edited_b6.loc[edited_b6[B6_LABEL_COL] == B6_STRESS_QTA_ROW, prev_year] = ""
+                            edited_b6.loc[edited_b6[B6_LABEL_COL] == B6_STRESS_QTA_ROW, curr_year] = ""
+
+                        st.session_state.vsme_disclosure_tables[b6_key] = edited_b6
+
+                        if pillar_code == "E" and questions_for_pillar is not None and gap_scale_options is not None:
+                            st.markdown("---")
+                            st.markdown("##### Documenti e informazioni - Disclosure B6")
+                            render_gap_list(
+                                questions_for_pillar,
+                                pillar_code,
+                                st.container(),
+                                gap_scale_options,
+                                gap_prefix,
+                                question_filter=is_b6_water_question,
+                                manage_cleanup=False,
+                            )
+                            render_disclosure_readiness(
+                                questions_for_pillar,
+                                pillar_code,
+                                gap_prefix,
+                                "Disclosure B6",
+                                question_filter=is_b6_water_question,
+                            )
+
+                    if not b1_is_custom and not b2_is_custom and not b3_is_custom and not b4_is_custom and not b5_is_custom and not b6_is_custom:
                         if disclosure.get("tables"):
                             for table in disclosure["tables"]:
                                 editor_storage_key = f"vsme_table_{pillar_code}_{selected_mode}_{disclosure['code']}_{table['sheet_name']}"
@@ -3006,7 +3860,7 @@ with t_triage:
         }
         response_colors = {
             "Sì": "#2ecc71",
-            "Sì, ma con integrazione necessaria": "#f39c12",
+            "Sì, ma necessita integrazione": "#f39c12",
             "No, ma pianificato": "#3498db",
             "No": "#e74c3c",
         }
@@ -3420,7 +4274,18 @@ with t_rischi:
                 st.session_state.portfolio_df = process_portfolio_dataframe(current_assets) if not current_assets.empty else pd.DataFrame()
                 return
 
-            if st.session_state.get("hq_geocoded_address") != hq_address or st.session_state.get("hq_lat") is None or st.session_state.get("hq_lon") is None:
+            manual_hq_lat = st.session_state.get("hq_lat")
+            manual_hq_lon = st.session_state.get("hq_lon")
+            if manual_hq_lat is not None and manual_hq_lon is not None:
+                try:
+                    st.session_state.hq_geocoded_address = hq_address or "Coordinate manuali sede"
+                    st.session_state.hq_lat = float(manual_hq_lat)
+                    st.session_state.hq_lon = float(manual_hq_lon)
+                except (TypeError, ValueError):
+                    return
+            elif OFFLINE_MODE:
+                return
+            elif st.session_state.get("hq_geocoded_address") != hq_address or st.session_state.get("hq_lat") is None or st.session_state.get("hq_lon") is None:
                 try:
                     geolocator = Nominatim(user_agent="smes-reporting-support-hq")
                     location = geolocator.geocode(hq_address, timeout=10)
@@ -3531,6 +4396,8 @@ with t_rischi:
             if submit_manual_address:
                 if not manual_address or not manual_address.strip():
                     st.warning("Inserisci un indirizzo valido.")
+                elif OFFLINE_MODE:
+                    st.warning("La geolocalizzazione da indirizzo richiede internet. In offline usa il form GPS o carica un file con colonne Lat e Lon.")
                 else:
                     try:
                         geolocator = Nominatim(user_agent="smes-reporting-support-map")
