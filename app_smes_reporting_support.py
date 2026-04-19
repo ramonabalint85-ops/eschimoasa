@@ -65,7 +65,10 @@ def format_unbounded_number(value):
     try:
         numeric_value = float(value)
     except (TypeError, ValueError):
-        return str(value)
+        # Unparseable value (e.g. a stale Italian-formatted string stored as the
+        # value key): return "0" rather than propagating the bad string, which
+        # would cause an infinite display-reset loop in unbounded_number_input.
+        return "0"
     if numeric_value.is_integer():
         return f"{int(numeric_value):,}".replace(",", ".")
 
@@ -129,6 +132,13 @@ def sync_formatted_number_input(display_key, value_key, allow_float):
 
 def unbounded_number_input(label, value_key, display_key, help=None, placeholder=None, allow_float=True):
     current_value = st.session_state.get(value_key, 0)
+    # Coerce any string stored in the value key (e.g. from an old autosave that
+    # serialised an Italian-formatted string instead of a number) to a proper
+    # numeric value so the display can be formatted correctly.
+    if isinstance(current_value, str):
+        coerced = parse_unbounded_number(current_value)
+        current_value = coerced if coerced is not None else 0
+        st.session_state[value_key] = current_value
     formatted_value = format_unbounded_number(current_value)
     if display_key not in st.session_state:
         st.session_state[display_key] = "" if current_value == 0 else formatted_value
