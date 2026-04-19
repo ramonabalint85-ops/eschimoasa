@@ -134,7 +134,11 @@ def unbounded_number_input(label, value_key, display_key, help=None, placeholder
         st.session_state[display_key] = "" if current_value == 0 else formatted_value
     else:
         parsed_display_value = parse_unbounded_number(st.session_state[display_key])
-        if parsed_display_value == current_value and st.session_state[display_key] != formatted_value:
+        # Reset when the display is unparseable (corrupted value) OR when it
+        # represents the correct underlying number but is not in canonical format.
+        if parsed_display_value is None or (
+            parsed_display_value == current_value and st.session_state[display_key] != formatted_value
+        ):
             st.session_state[display_key] = "" if current_value == 0 else formatted_value
 
     st.text_input(
