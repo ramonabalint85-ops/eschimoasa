@@ -1072,15 +1072,67 @@ with st.sidebar:
             display_key="revenue_input",
             placeholder="0",
         )
+        st.session_state.totale_attivo = unbounded_number_input(
+            "Totale bilancio / Attivo (€)",
+            value_key="totale_attivo",
+            display_key="totale_attivo_input",
+            placeholder="0",
+        )
+        st.checkbox("Azienda quotata in borsa?", key="quotata")
 
-        if st.session_state.dipendenti > 0 and st.session_state.revenue > 0:
-            ue_esrs = st.session_state.dipendenti > 1000 and st.session_state.revenue > 450000000
-            if ue_esrs:
+        dip = st.session_state.dipendenti
+        rev = st.session_state.revenue
+        attivo = st.session_state.totale_attivo
+        quotata = st.session_state.quotata
+
+        if dip > 0 and rev > 0 and attivo > 0:
+            # Grandi imprese con obbligo ESRS: dipendenti > 1.000 E fatturato netto > €450 mln
+            esrs_obbligato = dip > 1000 and rev > 450000000
+            # PMI VSME: dipendenti ≤ 250 E fatturato ≤ €50 mln E totale bilancio ≤ €25 mln
+            pmi_vsme = dip <= 250 and rev <= 50000000 and attivo <= 25000000
+            # Imprese escluse da CSRD: dipendenti tra 251 e 1.000 (dip > 250 implica non-pmi_vsme)
+            csrd_escluse = 251 <= dip <= 1000
+
+            if esrs_obbligato:
                 st.session_state.status_normativo = "CSRD_GRANDE"
-                st.error("**Esito:** OBBLIGO ESRS (Grande Impresa UE: Dipendenti > 1.000 e fatturato netto > 450M €)", icon="⚖️")
+                st.error(
+                    "**Esito: OBBLIGO ESRS** – L'impresa è soggetta agli standard europei completi (ESRS) "
+                    "e non può utilizzare questa app. "
+                    "(Dipendenti > 1.000 e fatturato netto > €450 mln)",
+                    icon="⚖️",
+                )
+            elif pmi_vsme and quotata:
+                st.session_state.status_normativo = "LSME"
+                st.error(
+                    "**Esito: Standard LSME** – Le PMI quotate in borsa devono rendicontare secondo lo "
+                    "standard LSME (Listed SME) e non possono utilizzare questa app.",
+                    icon="📋",
+                )
+            elif pmi_vsme:
+                st.session_state.status_normativo = "VSME"
+                st.success(
+                    "**Esito: PMI VSME** ✅ – L'impresa può utilizzare questa app per la rendicontazione VSME. "
+                    "(Dipendenti ≤ 250, fatturato ≤ €50 mln, totale bilancio ≤ €25 mln)",
+                )
+            elif csrd_escluse:
+                st.session_state.status_normativo = "VSME"
+                st.success(
+                    "**Esito: Esclusa da CSRD** ⏳ – L'impresa (tra 251 e 1.000 dipendenti) è esclusa "
+                    "dall'obbligo CSRD. Può fare la rendicontazione VSME con questa app in attesa di "
+                    "nuova normativa dedicata.",
+                )
             else:
                 st.session_state.status_normativo = "VSME"
-                st.success("**Esito:** Rendicontazione VSME (dipendenti <= 1.000 e fatturato netto <= 450M €)")
+                st.info(
+                    "**Esito: Percorso volontario VSME** – L'impresa può utilizzare questa app per la "
+                    "rendicontazione volontaria.",
+                    icon="ℹ️",
+                )
+        elif dip > 0 or rev > 0 or attivo > 0:
+            st.caption(
+                "Inserisci tutti i parametri (dipendenti, fatturato e totale bilancio) "
+                "per completare il test di assoggettabilità."
+            )
     
     # Campi condizionali per Extra-UE
     elif st.session_state.impresa_area == "Extra-UE":
@@ -1111,7 +1163,10 @@ with st.sidebar:
         key="project_name_input"
     )
     effective_project_name = project_name_input.strip() or st.session_state.get('current_project_name', '').strip() or st.session_state.get('company_name', '').strip()
-    if st.button("Salva", use_container_width=True):
+    app_not_eligible = st.session_state.get('status_normativo') in ('LSME', 'CSRD_GRANDE')
+    if app_not_eligible:
+        st.info("Il salvataggio progetto è disponibile solo per le aziende idonee all'utilizzo dell'app.", icon="🔒")
+    if st.button("Salva", use_container_width=True, disabled=app_not_eligible):
         if not effective_project_name:
             st.warning("Inserisci un nome prima di salvare.")
         else:
