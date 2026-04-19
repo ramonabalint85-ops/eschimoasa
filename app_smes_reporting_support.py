@@ -95,6 +95,12 @@ def parse_unbounded_number(raw_value):
             cleaned = f"{integer_part}.{decimal_part}"
         else:
             cleaned = cleaned.replace(",", "")
+    elif "." in cleaned:
+        # Dots only: treat as Italian thousands separator when every group
+        # after the first dot is exactly 3 digits (e.g. "15.000", "1.234.567").
+        parts = cleaned.lstrip("-").split(".")
+        if len(parts) > 1 and all(len(p) == 3 and p.isdigit() for p in parts[1:]) and parts[0].isdigit():
+            cleaned = cleaned.replace(".", "")
 
     try:
         numeric_value = float(cleaned)
@@ -109,6 +115,9 @@ def parse_unbounded_number(raw_value):
 def sync_formatted_number_input(display_key, value_key, allow_float):
     parsed_value = parse_unbounded_number(st.session_state.get(display_key, ""))
     if parsed_value is None:
+        # Invalid input — reset the display to the last known valid value.
+        current = st.session_state.get(value_key, 0)
+        st.session_state[display_key] = "" if current == 0 else format_unbounded_number(current)
         return
 
     if not allow_float:
@@ -326,6 +335,11 @@ def load_project_payload(payload, fallback_name=None):
     st.session_state['gap_documents'] = deserialize_gap_documents(state.get('gap_documents'))
     st.session_state['vsme_disclosure_tables'] = deserialize_vsme_disclosure_tables(state.get('vsme_disclosure_tables'))
     register_saved_project(normalized_payload)
+
+    # Clear cached display values for number inputs so they re-initialize from
+    # the freshly loaded value keys on the next render.
+    for key in ('dipendenti_input', 'revenue_input', 'totale_attivo_input'):
+        st.session_state.pop(key, None)
 
     for key in list(st.session_state.keys()):
         if key.startswith('editor_vsme_table_') or key.startswith('show_pdf_'):
