@@ -257,7 +257,6 @@ def project_signature_from_payload(payload):
 def register_saved_project(payload):
     st.session_state['current_project_name'] = payload.get('project_name', '')
     st.session_state['last_project_saved_at'] = payload.get('saved_at', '')
-    st.session_state['project_name_input'] = st.session_state['current_project_name']
     st.session_state['last_project_signature'] = project_signature_from_payload(payload)
 
 
