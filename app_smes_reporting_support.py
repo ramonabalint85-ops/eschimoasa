@@ -70,15 +70,13 @@ def format_unbounded_number(value):
         # would cause an infinite display-reset loop in unbounded_number_input.
         return "0"
     if numeric_value.is_integer():
-        return f"{int(numeric_value):,}".replace(",", ".")
+        return str(int(numeric_value))
 
-    formatted = f"{numeric_value:,.2f}"
-    integer_part, decimal_part = formatted.split(".")
-    integer_part = integer_part.replace(",", ".")
-    decimal_part = decimal_part.rstrip('0')
+    # No thousand separators; use comma as decimal separator (Italian format).
+    decimal_part = f"{numeric_value:.10f}".split(".")[1].rstrip("0")
     if not decimal_part:
-        return integer_part
-    return f"{integer_part},{decimal_part}"
+        return str(int(numeric_value))
+    return f"{int(numeric_value)},{decimal_part}"
 
 
 def parse_unbounded_number(raw_value):
