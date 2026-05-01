@@ -47,7 +47,7 @@ APP_DISPLAY_TITLE = os.getenv("SMES_REPORTING_DISPLAY_TITLE", "🌍 Supporto all
 OFFLINE_MODE = os.getenv("SMES_REPORTING_OFFLINE_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 st.set_page_config(page_title=APP_PAGE_TITLE, layout="wide")
-check_email_access()
+# check_email_access()  # Disabled: users can access the app directly without email authentication
 
 # --- CACHE PERSISTENTE E THROTTLING (Anti-Rate-Limiting) ---
 APP_ROOT = Path(__file__).resolve().parent
