@@ -9,6 +9,7 @@ import numpy as np
 import PyPDF2
 import json
 import base64
+import logging
 from openai import OpenAI
 from geopy.geocoders import Nominatim
 import os
@@ -283,11 +284,141 @@ def register_saved_project(payload):
     st.session_state['last_project_signature'] = project_signature_from_payload(payload)
 
 
+def _backup_to_github(file_name, file_content, project_name):
+    """Push project JSON to GitHub repository. Returns (success, message)."""
+    try:
+        from github import Github, GithubException
+    except ImportError:
+        return False, "PyGithub library not installed"
+
+    try:
+        token = st.secrets.get("GITHUB_TOKEN")
+    except Exception:
+        token = None
+    if not token:
+        return False, "GITHUB_TOKEN not found in secrets"
+
+    try:
+        g = Github(token)
+        repo = g.get_repo("ramonabalint85-ops/PMI-projects-rendicontazione")
+        file_path = f"projects/{file_name}"
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        commit_message = f"Backup project: {project_name} - {timestamp}"
+        try:
+            existing = repo.get_contents(file_path)
+            repo.update_file(file_path, commit_message, file_content, existing.sha)
+        except GithubException as exc:
+            if exc.status == 404:
+                repo.create_file(file_path, commit_message, file_content)
+            else:
+                raise
+        return True, "GitHub backup successful"
+    except Exception as exc:
+        return False, f"GitHub backup failed: {exc}"
+
+
+def _backup_to_google_drive(file_name, file_content, project_name):
+    """Upload project JSON to Google Drive. Returns (success, message)."""
+    try:
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaInMemoryUpload
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+    except ImportError:
+        return False, "Google API libraries not installed"
+
+    try:
+        raw = st.secrets.get("GOOGLE_CREDENTIALS_JSON")
+    except Exception:
+        raw = None
+    if not raw:
+        return False, "GOOGLE_CREDENTIALS_JSON not found in secrets"
+
+    try:
+        if isinstance(raw, str):
+            creds_data = json.loads(raw)
+        else:
+            creds_data = dict(raw)
+
+        creds = Credentials(
+            token=creds_data.get("token"),
+            refresh_token=creds_data.get("refresh_token"),
+            token_uri=creds_data.get("token_uri", "https://oauth2.googleapis.com/token"),
+            client_id=creds_data.get("client_id"),
+            client_secret=creds_data.get("client_secret"),
+            scopes=creds_data.get("scopes", ["https://www.googleapis.com/auth/drive"]),
+        )
+
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+        folder_name = "VSME Projects Backup"
+        folder_query = (
+            f"mimeType='application/vnd.google-apps.folder'"
+            f" and name='{folder_name}' and trashed=false"
+        )
+        folder_results = service.files().list(q=folder_query, fields="files(id)").execute()
+        folders = folder_results.get("files", [])
+        if folders:
+            folder_id = folders[0]["id"]
+        else:
+            folder_metadata = {
+                "name": folder_name,
+                "mimeType": "application/vnd.google-apps.folder",
+            }
+            folder = service.files().create(body=folder_metadata, fields="id").execute()
+            folder_id = folder["id"]
+
+        file_query = (
+            f"name='{file_name}' and '{folder_id}' in parents and trashed=false"
+        )
+        file_results = service.files().list(q=file_query, fields="files(id)").execute()
+        existing_files = file_results.get("files", [])
+
+        media = MediaInMemoryUpload(
+            file_content.encode("utf-8"), mimetype="application/json"
+        )
+        if existing_files:
+            service.files().update(
+                fileId=existing_files[0]["id"], media_body=media
+            ).execute()
+        else:
+            file_metadata = {"name": file_name, "parents": [folder_id]}
+            service.files().create(
+                body=file_metadata, media_body=media, fields="id"
+            ).execute()
+
+        return True, "Google Drive backup successful"
+    except Exception as exc:
+        return False, f"Google Drive backup failed: {exc}"
+
+
 def save_project_payload(payload):
     normalized_payload = normalize_project_payload(payload)
     with open(get_project_file(normalized_payload['project_name']), 'w', encoding='utf-8') as handle:
         json.dump(normalized_payload, handle, ensure_ascii=False, indent=2)
     register_saved_project(normalized_payload)
+
+    project_name = normalized_payload['project_name']
+    file_name = f"{sanitize_project_name(project_name)}.json"
+    file_content = json.dumps(normalized_payload, ensure_ascii=False, indent=2)
+
+    try:
+        ok, msg = _backup_to_github(file_name, file_content, project_name)
+        if not ok:
+            logging.error("GitHub backup error: %s", msg)
+    except Exception as exc:
+        logging.error("GitHub backup error: %s", exc)
+
+    try:
+        ok, msg = _backup_to_google_drive(file_name, file_content, project_name)
+        if not ok:
+            logging.error("Google Drive backup error: %s", msg)
+    except Exception as exc:
+        logging.error("Google Drive backup error: %s", exc)
+
     return normalized_payload
 
 
