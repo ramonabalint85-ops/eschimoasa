@@ -403,14 +403,16 @@ def _run_backups_in_background(file_name, file_content_bytes):
 def save_project_payload(payload):
     normalized_payload = normalize_project_payload(payload)
     file_path = get_project_file(normalized_payload['project_name'])
-    # Guard against path traversal: ensure file stays inside PROJECTS_DIR
-    if not os.path.realpath(file_path).startswith(os.path.realpath(PROJECTS_DIR)):
+    # Guard against path traversal: resolve symlinks and confirm file stays inside PROJECTS_DIR
+    resolved_path = os.path.realpath(file_path)
+    projects_dir_realpath = os.path.realpath(PROJECTS_DIR) + os.sep
+    if not resolved_path.startswith(projects_dir_realpath):
         raise ValueError(f"Invalid project file path: {file_path}")
     file_content = json.dumps(normalized_payload, ensure_ascii=False, indent=2)
-    with open(file_path, 'w', encoding='utf-8') as handle:
+    with open(resolved_path, 'w', encoding='utf-8') as handle:
         handle.write(file_content)
     register_saved_project(normalized_payload)
-    file_name = os.path.basename(file_path)
+    file_name = os.path.basename(resolved_path)
     _run_backups_in_background(file_name, file_content.encode('utf-8'))
     return normalized_payload
 
