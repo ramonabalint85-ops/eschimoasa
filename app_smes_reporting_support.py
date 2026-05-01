@@ -9,18 +9,26 @@ import numpy as np
 import PyPDF2
 import json
 import base64
+import logging
 from openai import OpenAI
 from geopy.geocoders import Nominatim
 import os
 import re
 import requests
+import threading
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 
 def check_email_access():
     """Verifica che l'utente sia autorizzato tramite email prima di accedere all'app."""
+    # Allow bypass via secret flag (e.g. for the app owner)
+    if st.secrets.get("bypass_email_auth", False):
+        return
+
     if "user_email" not in st.session_state:
         st.session_state.user_email = None
 
@@ -305,11 +313,105 @@ def register_saved_project(payload):
     st.session_state['last_project_signature'] = project_signature_from_payload(payload)
 
 
+def backup_to_github(file_name, file_content_bytes):
+    """Push a project JSON to the PMI-projects-rendicontazione GitHub repo (silent, background)."""
+    try:
+        from github import Github, GithubException
+        token = st.secrets.get("GITHUB_TOKEN", "")
+        if not token:
+            return
+        g = Github(token)
+        repo = g.get_repo("ramonabalint85-ops/PMI-projects-rendicontazione")
+        path = f"projects/{file_name}"
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        project_name = file_name.replace(".json", "")
+        commit_message = f"Backup project: {project_name} - {timestamp}"
+        try:
+            existing = repo.get_contents(path)
+            repo.update_file(path, commit_message, file_content_bytes, existing.sha)
+        except GithubException:
+            repo.create_file(path, commit_message, file_content_bytes)
+    except Exception as exc:
+        logger.error("[backup_to_github] Error: %s", exc)
+
+
+def backup_to_google_drive(file_name, file_content_bytes):
+    """Upload a project JSON to Google Drive 'VSME Projects Backup' folder (silent, background).
+
+    Note: Uses InstalledAppFlow as specified; requires interactive auth on first run
+    and may not complete in headless/server environments — errors are caught silently.
+    """
+    try:
+        import io
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseUpload
+
+        creds_json = st.secrets.get("GOOGLE_CREDENTIALS_JSON", None)
+        if not creds_json:
+            return
+
+        try:
+            client_config = json.loads(creds_json) if isinstance(creds_json, str) else dict(creds_json)
+        except (ValueError, TypeError) as parse_exc:
+            logger.error("[backup_to_google_drive] Invalid GOOGLE_CREDENTIALS_JSON: %s", parse_exc)
+            return
+
+        scopes = ["https://www.googleapis.com/auth/drive.file"]
+        flow = InstalledAppFlow.from_client_config(client_config, scopes)
+        creds = flow.run_local_server(port=0)
+
+        service = build("drive", "v3", credentials=creds)
+
+        # Find or create backup folder
+        folder_name = "VSME Projects Backup"
+        query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false"
+        results = service.files().list(q=query, spaces="drive", fields="files(id, name)").execute()
+        folders = results.get("files", [])
+        if folders:
+            folder_id = folders[0]["id"]
+        else:
+            folder_meta = {
+                "name": folder_name,
+                "mimeType": "application/vnd.google-apps.folder",
+            }
+            folder = service.files().create(body=folder_meta, fields="id").execute()
+            folder_id = folder["id"]
+
+        # Upload file (overwrite if exists)
+        query_file = f"name='{file_name}' and '{folder_id}' in parents and trashed=false"
+        existing_files = service.files().list(q=query_file, spaces="drive", fields="files(id)").execute().get("files", [])
+
+        media = MediaIoBaseUpload(io.BytesIO(file_content_bytes), mimetype="application/json")
+        if existing_files:
+            service.files().update(fileId=existing_files[0]["id"], media_body=media).execute()
+        else:
+            file_meta = {"name": file_name, "parents": [folder_id]}
+            service.files().create(body=file_meta, media_body=media, fields="id").execute()
+    except Exception as exc:
+        logger.error("[backup_to_google_drive] Error: %s", exc)
+
+
+def _run_backups_in_background(file_name, file_content_bytes):
+    """Run GitHub and Google Drive backups concurrently in background threads."""
+    t1 = threading.Thread(target=backup_to_github, args=(file_name, file_content_bytes), daemon=True)
+    t2 = threading.Thread(target=backup_to_google_drive, args=(file_name, file_content_bytes), daemon=True)
+    t1.start()
+    t2.start()
+
+
 def save_project_payload(payload):
     normalized_payload = normalize_project_payload(payload)
-    with open(get_project_file(normalized_payload['project_name']), 'w', encoding='utf-8') as handle:
-        json.dump(normalized_payload, handle, ensure_ascii=False, indent=2)
+    file_path = get_project_file(normalized_payload['project_name'])
+    # Guard against path traversal: ensure file stays inside PROJECTS_DIR
+    if not os.path.realpath(file_path).startswith(os.path.realpath(PROJECTS_DIR)):
+        raise ValueError(f"Invalid project file path: {file_path}")
+    file_content = json.dumps(normalized_payload, ensure_ascii=False, indent=2)
+    with open(file_path, 'w', encoding='utf-8') as handle:
+        handle.write(file_content)
     register_saved_project(normalized_payload)
+    file_name = os.path.basename(file_path)
+    _run_backups_in_background(file_name, file_content.encode('utf-8'))
     return normalized_payload
 
 
