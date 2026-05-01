@@ -65,7 +65,10 @@ def format_unbounded_number(value):
     try:
         numeric_value = float(value)
     except (TypeError, ValueError):
-        return str(value)
+        # Unparseable value (e.g. a stale Italian-formatted string stored as the
+        # value key): return "0" rather than propagating the bad string, which
+        # would cause an infinite display-reset loop in unbounded_number_input.
+        return "0"
     if numeric_value.is_integer():
         return f"{int(numeric_value):,}".replace(",", ".")
 
@@ -95,6 +98,12 @@ def parse_unbounded_number(raw_value):
             cleaned = f"{integer_part}.{decimal_part}"
         else:
             cleaned = cleaned.replace(",", "")
+    elif "." in cleaned:
+        # Dots only: treat as Italian thousands separator when every group
+        # after the first dot is exactly 3 digits (e.g. "15.000", "1.234.567").
+        parts = cleaned.lstrip("-").split(".")
+        if len(parts) > 1 and all(len(p) == 3 and p.isdigit() for p in parts[1:]) and parts[0].isdigit():
+            cleaned = cleaned.replace(".", "")
 
     try:
         numeric_value = float(cleaned)
@@ -109,6 +118,9 @@ def parse_unbounded_number(raw_value):
 def sync_formatted_number_input(display_key, value_key, allow_float):
     parsed_value = parse_unbounded_number(st.session_state.get(display_key, ""))
     if parsed_value is None:
+        # Invalid input — reset the display to the last known valid value.
+        current = st.session_state.get(value_key, 0)
+        st.session_state[display_key] = "" if current == 0 else format_unbounded_number(current)
         return
 
     if not allow_float:
@@ -120,12 +132,23 @@ def sync_formatted_number_input(display_key, value_key, allow_float):
 
 def unbounded_number_input(label, value_key, display_key, help=None, placeholder=None, allow_float=True):
     current_value = st.session_state.get(value_key, 0)
+    # Coerce any string stored in the value key (e.g. from an old autosave that
+    # serialised an Italian-formatted string instead of a number) to a proper
+    # numeric value so the display can be formatted correctly.
+    if isinstance(current_value, str):
+        coerced = parse_unbounded_number(current_value)
+        current_value = coerced if coerced is not None else 0
+        st.session_state[value_key] = current_value
     formatted_value = format_unbounded_number(current_value)
     if display_key not in st.session_state:
         st.session_state[display_key] = "" if current_value == 0 else formatted_value
     else:
         parsed_display_value = parse_unbounded_number(st.session_state[display_key])
-        if parsed_display_value == current_value and st.session_state[display_key] != formatted_value:
+        # Reset when the display is unparseable (corrupted value) OR when it
+        # represents the correct underlying number but is not in canonical format.
+        if parsed_display_value is None or (
+            parsed_display_value == current_value and st.session_state[display_key] != formatted_value
+        ):
             st.session_state[display_key] = "" if current_value == 0 else formatted_value
 
     st.text_input(
@@ -257,7 +280,6 @@ def project_signature_from_payload(payload):
 def register_saved_project(payload):
     st.session_state['current_project_name'] = payload.get('project_name', '')
     st.session_state['last_project_saved_at'] = payload.get('saved_at', '')
-    st.session_state['project_name_input'] = st.session_state['current_project_name']
     st.session_state['last_project_signature'] = project_signature_from_payload(payload)
 
 
@@ -327,6 +349,11 @@ def load_project_payload(payload, fallback_name=None):
     st.session_state['gap_documents'] = deserialize_gap_documents(state.get('gap_documents'))
     st.session_state['vsme_disclosure_tables'] = deserialize_vsme_disclosure_tables(state.get('vsme_disclosure_tables'))
     register_saved_project(normalized_payload)
+
+    # Clear cached display values for number inputs so they re-initialize from
+    # the freshly loaded value keys on the next render.
+    for key in ('dipendenti_input', 'revenue_input', 'totale_attivo_input'):
+        st.session_state.pop(key, None)
 
     for key in list(st.session_state.keys()):
         if key.startswith('editor_vsme_table_') or key.startswith('show_pdf_'):
@@ -1072,15 +1099,67 @@ with st.sidebar:
             display_key="revenue_input",
             placeholder="0",
         )
+        st.session_state.totale_attivo = unbounded_number_input(
+            "Totale bilancio / Attivo (€)",
+            value_key="totale_attivo",
+            display_key="totale_attivo_input",
+            placeholder="0",
+        )
+        st.checkbox("Azienda quotata in borsa?", key="quotata")
 
-        if st.session_state.dipendenti > 0 and st.session_state.revenue > 0:
-            ue_esrs = st.session_state.dipendenti > 1000 and st.session_state.revenue > 450000000
-            if ue_esrs:
+        dip = st.session_state.dipendenti
+        rev = st.session_state.revenue
+        attivo = st.session_state.totale_attivo
+        quotata = st.session_state.quotata
+
+        if dip > 0 and rev > 0 and attivo > 0:
+            # Grandi imprese con obbligo ESRS: dipendenti > 1.000 E fatturato netto > €450 mln
+            esrs_obbligato = dip > 1000 and rev > 450000000
+            # PMI VSME: dipendenti ≤ 250 E fatturato ≤ €50 mln E totale bilancio ≤ €25 mln
+            pmi_vsme = dip <= 250 and rev <= 50000000 and attivo <= 25000000
+            # Imprese escluse da CSRD: dipendenti tra 251 e 1.000 (dip > 250 implica non-pmi_vsme)
+            csrd_escluse = 251 <= dip <= 1000
+
+            if esrs_obbligato:
                 st.session_state.status_normativo = "CSRD_GRANDE"
-                st.error("**Esito:** OBBLIGO ESRS (Grande Impresa UE: Dipendenti > 1.000 e fatturato netto > 450M €)", icon="⚖️")
+                st.error(
+                    "**Esito: OBBLIGO ESRS** – L'impresa è soggetta agli standard europei completi (ESRS) "
+                    "e non può utilizzare questa app. "
+                    "(Dipendenti > 1.000 e fatturato netto > €450 mln)",
+                    icon="⚖️",
+                )
+            elif pmi_vsme and quotata:
+                st.session_state.status_normativo = "LSME"
+                st.error(
+                    "**Esito: Standard LSME** – Le PMI quotate in borsa devono rendicontare secondo lo "
+                    "standard LSME (Listed SME) e non possono utilizzare questa app.",
+                    icon="📋",
+                )
+            elif pmi_vsme:
+                st.session_state.status_normativo = "VSME"
+                st.success(
+                    "**Esito: PMI VSME** ✅ – L'impresa può utilizzare questa app per la rendicontazione VSME. "
+                    "(Dipendenti ≤ 250, fatturato ≤ €50 mln, totale bilancio ≤ €25 mln)",
+                )
+            elif csrd_escluse:
+                st.session_state.status_normativo = "VSME"
+                st.success(
+                    "**Esito: Esclusa da CSRD** ⏳ – L'impresa (tra 251 e 1.000 dipendenti) è esclusa "
+                    "dall'obbligo CSRD. Può fare la rendicontazione VSME con questa app in attesa di "
+                    "nuova normativa dedicata.",
+                )
             else:
                 st.session_state.status_normativo = "VSME"
-                st.success("**Esito:** Rendicontazione VSME (dipendenti <= 1.000 e fatturato netto <= 450M €)")
+                st.info(
+                    "**Esito: Percorso volontario VSME** – L'impresa può utilizzare questa app per la "
+                    "rendicontazione volontaria.",
+                    icon="ℹ️",
+                )
+        elif dip > 0 or rev > 0 or attivo > 0:
+            st.caption(
+                "Inserisci tutti i parametri (dipendenti, fatturato e totale bilancio) "
+                "per completare il test di assoggettabilità."
+            )
     
     # Campi condizionali per Extra-UE
     elif st.session_state.impresa_area == "Extra-UE":
@@ -1111,7 +1190,10 @@ with st.sidebar:
         key="project_name_input"
     )
     effective_project_name = project_name_input.strip() or st.session_state.get('current_project_name', '').strip() or st.session_state.get('company_name', '').strip()
-    if st.button("Salva", use_container_width=True):
+    app_not_eligible = st.session_state.get('status_normativo') in ('LSME', 'CSRD_GRANDE')
+    if app_not_eligible:
+        st.info("Il salvataggio progetto è disponibile solo per le aziende idonee all'utilizzo dell'app.", icon="🔒")
+    if st.button("Salva", use_container_width=True, disabled=app_not_eligible):
         if not effective_project_name:
             st.warning("Inserisci un nome prima di salvare.")
         else:
