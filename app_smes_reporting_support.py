@@ -19,35 +19,12 @@ from functools import lru_cache
 from pathlib import Path
 
 
-def check_email_access():
-    """Verifica che l'utente sia autorizzato tramite email prima di accedere all'app."""
-    if "user_email" not in st.session_state:
-        st.session_state.user_email = None
-
-    if st.session_state.user_email is None:
-        st.title("🔐 Accesso App VSME")
-        st.write("Inserisci la tua email per accedere:")
-
-        email = st.text_input("Email", key="email_input")
-
-        if st.button("Accedi"):
-            authorized = [e.lower() for e in st.secrets.get("authorized_emails", [])]
-            if email.strip().lower() in authorized:
-                st.session_state.user_email = email.strip().lower()
-                st.success(f"✅ Benvenuto {email}!")
-                st.rerun()
-            else:
-                st.error("❌ Email non autorizzata. Contatta l'amministratore.")
-        st.stop()
-
-
 # --- CONFIGURAZIONE PAGINA ---
 APP_PAGE_TITLE = os.getenv("SMES_REPORTING_PAGE_TITLE", "Supporto alla Rendicontazione PMI")
 APP_DISPLAY_TITLE = os.getenv("SMES_REPORTING_DISPLAY_TITLE", "🌍 Supporto alla Rendicontazione PMI")
 OFFLINE_MODE = os.getenv("SMES_REPORTING_OFFLINE_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 st.set_page_config(page_title=APP_PAGE_TITLE, layout="wide")
-check_email_access()
 
 # --- CACHE PERSISTENTE E THROTTLING (Anti-Rate-Limiting) ---
 APP_ROOT = Path(__file__).resolve().parent
