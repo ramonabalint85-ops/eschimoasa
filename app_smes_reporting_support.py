@@ -1112,13 +1112,62 @@ with st.sidebar:
         attivo = st.session_state.totale_attivo
         quotata = st.session_state.quotata
 
-        if dip > 0 and rev > 0 and attivo > 0:
-            # Grandi imprese con obbligo ESRS: dipendenti > 1.000 E fatturato netto > €450 mln
-            esrs_obbligato = dip > 1000 and rev > 450000000
-            # PMI VSME: dipendenti ≤ 250 E fatturato ≤ €50 mln E totale bilancio ≤ €25 mln
-            pmi_vsme = dip <= 250 and rev <= 50000000 and attivo <= 25000000
-            # Imprese escluse da CSRD: dipendenti tra 251 e 1.000 (dip > 250 implica non-pmi_vsme)
-            csrd_escluse = 251 <= dip <= 1000
+        has_dip = dip > 0
+        has_rev = rev > 0
+        has_attivo = attivo > 0
+        n_provided = sum([has_dip, has_rev, has_attivo])
+
+        if n_provided >= 2:
+            # ---------- Grandi Imprese (CSRD) ----------
+            # Richiede entrambi: dipendenti > 1.000 E fatturato netto > €450 mln
+            esrs_obbligato = has_dip and has_rev and dip > 1000 and rev > 450_000_000
+
+            # ---------- PMI Quotate (LSME) ----------
+            # 51-1.000 dip AND 11-450 mln rev AND 5,5-25 mln attivo (2 su 3) + quotata in borsa
+            lsme_checks = []
+            if has_dip:
+                lsme_checks.append(51 <= dip <= 1000)
+            if has_rev:
+                lsme_checks.append(11_000_000 <= rev <= 450_000_000)
+            if has_attivo:
+                lsme_checks.append(5_500_000 <= attivo <= 25_000_000)
+            lsme_match = sum(lsme_checks) >= 2 and quotata
+
+            # ---------- Escluse da CSRD (251-1.000 dipendenti) ----------
+            csrd_escluse = has_dip and 251 <= dip <= 1000
+
+            # ---------- Medie Imprese (VSME) ----------
+            # < 250 dip AND < 50 mln rev AND < 25 mln attivo (2 su 3)
+            medie_checks = []
+            if has_dip:
+                medie_checks.append(dip < 250)
+            if has_rev:
+                medie_checks.append(rev < 50_000_000)
+            if has_attivo:
+                medie_checks.append(attivo < 25_000_000)
+            medie_match = sum(medie_checks) >= 2
+
+            # ---------- Piccole Imprese (VSME) ----------
+            # ≤ 50 dip AND ≤ 11 mln rev AND ≤ 5,5 mln attivo (2 su 3)
+            piccole_checks = []
+            if has_dip:
+                piccole_checks.append(dip <= 50)
+            if has_rev:
+                piccole_checks.append(rev <= 11_000_000)
+            if has_attivo:
+                piccole_checks.append(attivo <= 5_500_000)
+            piccole_match = sum(piccole_checks) >= 2
+
+            # ---------- Micro Imprese (VSME) ----------
+            # ≤ 10 dip AND ≤ 900k rev AND ≤ 450k attivo (2 su 3)
+            micro_checks = []
+            if has_dip:
+                micro_checks.append(dip <= 10)
+            if has_rev:
+                micro_checks.append(rev <= 900_000)
+            if has_attivo:
+                micro_checks.append(attivo <= 450_000)
+            micro_match = sum(micro_checks) >= 2
 
             if esrs_obbligato:
                 st.session_state.status_normativo = "CSRD_GRANDE"
@@ -1128,18 +1177,13 @@ with st.sidebar:
                     "(Dipendenti > 1.000 e fatturato netto > €450 mln)",
                     icon="⚖️",
                 )
-            elif pmi_vsme and quotata:
+            elif lsme_match:
                 st.session_state.status_normativo = "LSME"
                 st.error(
                     "**Esito: Standard LSME** – Le PMI quotate in borsa devono rendicontare secondo lo "
-                    "standard LSME (Listed SME) e non possono utilizzare questa app.",
+                    "standard LSME (Listed SME) e non possono utilizzare questa app. "
+                    "(51-1.000 dip., 11-450 mln € fatturato, 5,5-25 mln € attivo – 2 su 3 – e quotata in borsa)",
                     icon="📋",
-                )
-            elif pmi_vsme:
-                st.session_state.status_normativo = "VSME"
-                st.success(
-                    "**Esito: PMI VSME** ✅ – L'impresa può utilizzare questa app per la rendicontazione VSME. "
-                    "(Dipendenti ≤ 250, fatturato ≤ €50 mln, totale bilancio ≤ €25 mln)",
                 )
             elif csrd_escluse:
                 st.session_state.status_normativo = "VSME"
@@ -1148,6 +1192,27 @@ with st.sidebar:
                     "dall'obbligo CSRD. Può fare la rendicontazione VSME con questa app in attesa di "
                     "nuova normativa dedicata.",
                 )
+            elif micro_match:
+                st.session_state.status_normativo = "VSME"
+                st.success(
+                    "**Esito: Micro Impresa VSME** ✅ – L'impresa può utilizzare questa app per la "
+                    "rendicontazione VSME volontaria. "
+                    "(≤ 10 dipendenti, ≤ €900k fatturato, ≤ €450k attivo – 2 su 3)",
+                )
+            elif piccole_match:
+                st.session_state.status_normativo = "VSME"
+                st.success(
+                    "**Esito: Piccola Impresa VSME** ✅ – L'impresa può utilizzare questa app per la "
+                    "rendicontazione VSME volontaria. "
+                    "(≤ 50 dipendenti, ≤ €11 mln fatturato, ≤ €5,5 mln attivo – 2 su 3)",
+                )
+            elif medie_match:
+                st.session_state.status_normativo = "VSME"
+                st.success(
+                    "**Esito: Media Impresa VSME** ✅ – L'impresa può utilizzare questa app per la "
+                    "rendicontazione VSME volontaria. "
+                    "(< 250 dipendenti, < €50 mln fatturato, < €25 mln attivo – 2 su 3)",
+                )
             else:
                 st.session_state.status_normativo = "VSME"
                 st.info(
@@ -1155,9 +1220,9 @@ with st.sidebar:
                     "rendicontazione volontaria.",
                     icon="ℹ️",
                 )
-        elif dip > 0 or rev > 0 or attivo > 0:
+        elif n_provided == 1:
             st.caption(
-                "Inserisci tutti i parametri (dipendenti, fatturato e totale bilancio) "
+                "Inserisci almeno 2 parametri su 3 (dipendenti, fatturato e totale bilancio) "
                 "per completare il test di assoggettabilità."
             )
     
