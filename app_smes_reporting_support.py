@@ -9,6 +9,8 @@ import numpy as np
 import PyPDF2
 import json
 import base64
+import logging
+import threading
 from openai import OpenAI
 from geopy.geocoders import Nominatim
 import os
@@ -282,11 +284,130 @@ def register_saved_project(payload):
     st.session_state['last_project_signature'] = project_signature_from_payload(payload)
 
 
+def _escape_drive_query_string(value: str) -> str:
+    """Escape a string for safe interpolation into a Google Drive API query."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _backup_to_github(file_name: str, content_bytes: bytes) -> None:
+    """Push *content_bytes* to PMI-projects-rendicontazione/projects/ on GitHub.
+
+    Reads the personal-access token from ``st.secrets["GITHUB_TOKEN"]``.
+    Creates or updates the remote file with a timestamped commit message.
+    Any exception is caught and logged so it never propagates to the caller.
+    """
+    try:
+        from github import Github, GithubException  # PyGithub
+
+        token = st.secrets.get("GITHUB_TOKEN")
+        if not token:
+            logging.warning("GITHUB_TOKEN not found in st.secrets – skipping GitHub backup")
+            return
+
+        gh = Github(token)
+        repo = gh.get_repo("ramonabalint85-ops/PMI-projects-rendicontazione")
+        remote_path = f"projects/{file_name}"
+        commit_msg = f"backup: {file_name} – {datetime.now().isoformat(timespec='seconds')}"
+
+        try:
+            existing = repo.get_contents(remote_path)
+            repo.update_file(remote_path, commit_msg, content_bytes, existing.sha)
+        except GithubException as get_exc:
+            if get_exc.status != 404:
+                raise
+            repo.create_file(remote_path, commit_msg, content_bytes)
+
+        logging.info("GitHub backup completed: %s", remote_path)
+    except Exception as exc:
+        logging.error("GitHub backup failed for %s: %s", file_name, exc)
+
+
+def _backup_to_google_drive(file_name: str, content_bytes: bytes) -> None:
+    """Upload *content_bytes* to the "VSME Projects Backup" folder in Google Drive.
+
+    Reads service-account credentials JSON from ``st.secrets["GOOGLE_CREDENTIALS_JSON"]``.
+    Creates the folder if missing; overwrites an existing file with the same name.
+    Any exception is caught and logged so it never propagates to the caller.
+    """
+    try:
+        import io
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseUpload
+
+        creds_json = st.secrets.get("GOOGLE_CREDENTIALS_JSON")
+        if not creds_json:
+            logging.warning("GOOGLE_CREDENTIALS_JSON not found in st.secrets – skipping Drive backup")
+            return
+
+        if isinstance(creds_json, str):
+            creds_info = json.loads(creds_json)
+        else:
+            creds_info = dict(creds_json)
+
+        scopes = ["https://www.googleapis.com/auth/drive"]
+        credentials = service_account.Credentials.from_service_account_info(creds_info, scopes=scopes)
+        service = build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+        folder_name = "VSME Projects Backup"
+        # Escape single quotes for the Drive API query string
+        escaped_folder = _escape_drive_query_string(folder_name)
+        escaped_file = _escape_drive_query_string(file_name)
+        query = f"mimeType='application/vnd.google-apps.folder' and name='{escaped_folder}' and trashed=false"
+        results = service.files().list(q=query, fields="files(id)").execute()
+        folders = results.get("files", [])
+
+        if folders:
+            folder_id = folders[0]["id"]
+        else:
+            folder_meta = {"name": folder_name, "mimeType": "application/vnd.google-apps.folder"}
+            folder = service.files().create(body=folder_meta, fields="id").execute()
+            folder_id = folder["id"]
+
+        query_file = (
+            f"name='{escaped_file}' and '{folder_id}' in parents and trashed=false"
+        )
+        existing_files = service.files().list(q=query_file, fields="files(id)").execute().get("files", [])
+
+        media = MediaIoBaseUpload(io.BytesIO(content_bytes), mimetype="application/json", resumable=False)
+
+        if existing_files:
+            service.files().update(fileId=existing_files[0]["id"], media_body=media).execute()
+        else:
+            file_meta = {"name": file_name, "parents": [folder_id]}
+            service.files().create(body=file_meta, media_body=media, fields="id").execute()
+
+        logging.info("Google Drive backup completed: %s", file_name)
+    except Exception as exc:
+        logging.error("Google Drive backup failed for %s: %s", file_name, exc)
+
+
+def _run_backups_in_background(file_name: str, content_bytes: bytes) -> None:
+    """Launch GitHub and Google Drive backups as daemon threads."""
+    for target in (_backup_to_github, _backup_to_google_drive):
+        t = threading.Thread(target=target, args=(file_name, content_bytes), daemon=True)
+        t.start()
+
+
 def save_project_payload(payload):
     normalized_payload = normalize_project_payload(payload)
-    with open(get_project_file(normalized_payload['project_name']), 'w', encoding='utf-8') as handle:
-        json.dump(normalized_payload, handle, ensure_ascii=False, indent=2)
+    project_file = get_project_file(normalized_payload['project_name'])
+
+    # Path traversal guard: ensure the resolved path stays inside PROJECTS_DIR
+    projects_dir_prefix = os.path.realpath(PROJECTS_DIR) + os.sep
+    safe_path = os.path.realpath(project_file)
+    if not safe_path.startswith(projects_dir_prefix):
+        raise ValueError(f"Unsafe project file path: {project_file}")
+
+    content = json.dumps(normalized_payload, ensure_ascii=False, indent=2)
+    with open(safe_path, 'w', encoding='utf-8') as handle:
+        handle.write(content)
     register_saved_project(normalized_payload)
+
+    # Silent background backup – failures are logged but never break local save
+    file_name = os.path.basename(safe_path)
+    _run_backups_in_background(file_name, content.encode('utf-8'))
+
     return normalized_payload
 
 

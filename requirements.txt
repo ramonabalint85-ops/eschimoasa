@@ -9,3 +9,7 @@ openai
 geopy
 requests
 openpyxl
+PyGithub
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
